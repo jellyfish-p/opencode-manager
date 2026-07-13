@@ -1,0 +1,15 @@
+.git
+.github
+.nuxt
+.output
+node_modules
+data
+docs
+tests
+*.db
+*.db-*
+*.log
+config.yaml
+.env
+.env.*
+.DS_Store

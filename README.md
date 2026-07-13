@@ -78,3 +78,18 @@ OpenAI 客户端配置：
 Base URL: http://localhost:3000/v1
 API Key: config.yaml 或网页创建的密钥
 ```
+
+## Docker
+
+镜像由 GitHub Actions 自动发布到 `ghcr.io/jellyfish-p/opencode-manager`。运行时挂载配置文件和数据目录：
+
+```bash
+docker run -d \
+  --name opencode-manager \
+  -p 3000:3000 \
+  -v "$PWD/config.yaml:/app/config.yaml:ro" \
+  -v "$PWD/data:/app/data" \
+  ghcr.io/jellyfish-p/opencode-manager:latest
+```
+
+推送到 `main` 会发布 `main`、`latest` 和提交 SHA 标签；推送 `v*` 标签会额外发布对应的语义版本标签。工作流也支持手动触发。

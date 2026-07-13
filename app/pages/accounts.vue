@@ -175,6 +175,29 @@ async function onDeleteNonMembers() {
     toast.add({ title: e?.data?.statusMessage || '批量删除失败', color: 'error' })
   }
 }
+
+async function copyReferralLink(code: string) {
+  const url = `https://opencode.ai/go?ref=${encodeURIComponent(code)}`
+  try {
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      const input = document.createElement('textarea')
+      input.value = url
+      input.setAttribute('readonly', '')
+      input.style.position = 'fixed'
+      input.style.opacity = '0'
+      document.body.appendChild(input)
+      input.select()
+      const copied = document.execCommand('copy')
+      input.remove()
+      if (!copied) throw new Error('Clipboard copy failed')
+    }
+    toast.add({ title: '推荐链接已复制', description: url, color: 'success' })
+  } catch {
+    toast.add({ title: '复制失败，请检查浏览器剪贴板权限', color: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -280,8 +303,18 @@ async function onDeleteNonMembers() {
                 <div class="text-xs text-muted">{{ formatQuotaAmount(account.monthly_usage, 60) }}</div>
                 <div class="text-xs text-muted">{{ formatDate(account.monthly_reset_at) }}</div>
               </td>
-              <td class="px-4 py-3 font-mono text-xs">
-                {{ account.referral_code || '-' }}
+              <td class="px-4 py-3 text-xs">
+                <button
+                  v-if="account.referral_code"
+                  type="button"
+                  class="inline-flex items-center gap-1 font-mono text-primary hover:underline"
+                  :title="`点击复制 https://opencode.ai/go?ref=${account.referral_code}`"
+                  @click="copyReferralLink(account.referral_code)"
+                >
+                  {{ account.referral_code }}
+                  <UIcon name="i-lucide-copy" class="size-3.5" />
+                </button>
+                <span v-else>-</span>
               </td>
               <td class="px-4 py-3 text-xs text-muted">
                 <div>{{ formatDate(account.last_synced_at) }}</div>
