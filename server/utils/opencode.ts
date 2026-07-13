@@ -219,6 +219,16 @@ export async function fetchOpenCodeAccount(
   cachedWorkspaceId?: string | null
 ): Promise<OpenCodeAccountInfo> {
   const cookie = buildAuthCookie(authCookie)
-  const workspaceId = cachedWorkspaceId?.trim() || await resolveWorkspaceId(cookie)
+  const cachedId = cachedWorkspaceId?.trim()
+
+  if (cachedId) {
+    try {
+      return await loadWorkspace(cookie, cachedId)
+    } catch {
+      // Resolve once through /auth below and replace the stale cache.
+    }
+  }
+
+  const workspaceId = await resolveWorkspaceId(cookie)
   return loadWorkspace(cookie, workspaceId)
 }
