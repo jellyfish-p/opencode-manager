@@ -18,16 +18,34 @@ export interface Account {
   weekly_reset_sec: number | null
   monthly_usage: number | null
   monthly_reset_sec: number | null
+  rolling_reset_at: string | null
+  weekly_reset_at: string | null
+  monthly_reset_at: string | null
+  next_quota_refresh_at: string | null
+  quota_refreshed_at: string | null
   referral_code: string | null
   subscription_status: string | null
+  upstream_api_key: string | null
   status: AccountStatus
+  disabled_reason: string | null
+  auto_enable_at: string | null
   last_error: string | null
   last_synced_at: string | null
   created_at: string
   updated_at: string
 }
 
-export type AccountPublic = Omit<Account, 'auth_cookie'>
+export type AccountPublic = Omit<Account, 'auth_cookie' | 'upstream_api_key'> & {
+  has_upstream_api_key: boolean
+}
+
+export interface ManagedApiKey {
+  id: number
+  name: string
+  key_hash: string
+  key_prefix: string
+  created_at: string
+}
 
 let db: Database.Database | null = null
 
@@ -56,9 +74,17 @@ export function getDb() {
       weekly_reset_sec INTEGER,
       monthly_usage REAL,
       monthly_reset_sec INTEGER,
+      rolling_reset_at TEXT,
+      weekly_reset_at TEXT,
+      monthly_reset_at TEXT,
+      next_quota_refresh_at TEXT,
+      quota_refreshed_at TEXT,
       referral_code TEXT,
       subscription_status TEXT,
+      upstream_api_key TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      disabled_reason TEXT,
+      auto_enable_at TEXT,
       last_error TEXT,
       last_synced_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -70,14 +96,48 @@ export function getDb() {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `)
+
+  migrateAccountColumns(db)
 
   return db
 }
 
 export function toPublicAccount(row: Account): AccountPublic {
-  const { auth_cookie: _, ...rest } = row
-  return rest
+  const { auth_cookie: _, upstream_api_key, ...rest } = row
+  return { ...rest, has_upstream_api_key: Boolean(upstream_api_key) }
+}
+
+function migrateAccountColumns(database: Database.Database) {
+  const existing = new Set(
+    (database.prepare('PRAGMA table_info(accounts)').all() as Array<{ name: string }>).map(c => c.name)
+  )
+  const columns: Record<string, string> = {
+    rolling_reset_at: 'TEXT',
+    weekly_reset_at: 'TEXT',
+    monthly_reset_at: 'TEXT',
+    next_quota_refresh_at: 'TEXT',
+    quota_refreshed_at: 'TEXT',
+    upstream_api_key: 'TEXT',
+    disabled_reason: 'TEXT',
+    auto_enable_at: 'TEXT'
+  }
+  for (const [name, type] of Object.entries(columns)) {
+    if (!existing.has(name)) database.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${type}`)
+  }
 }
 
 export function listAccounts(): Account[] {
@@ -121,6 +181,63 @@ export function updateAccount(id: number, data: Partial<Account>) {
 
 export function deleteAccount(id: number) {
   return getDb().prepare('DELETE FROM accounts WHERE id = ?').run(id)
+}
+
+export function deleteNonMemberAccounts() {
+  return getDb()
+    .prepare(`DELETE FROM accounts WHERE subscription_status IS NULL OR subscription_status <> 'active'`)
+    .run()
+}
+
+export function getProxyCandidates(): Account[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM accounts
+      WHERE status = 'active'
+        AND subscription_status = 'active'
+        AND upstream_api_key IS NOT NULL
+        AND upstream_api_key <> ''
+      ORDER BY id ASC
+    `)
+    .all() as Account[]
+}
+
+export function reserveProxyCandidates(): Account[] {
+  const database = getDb()
+  return database.transaction(() => {
+    const accounts = getProxyCandidates()
+    if (!accounts.length) return []
+    const row = database.prepare(`SELECT value FROM app_settings WHERE key = 'pool_cursor'`).get() as
+      | { value: string }
+      | undefined
+    const cursor = Number(row?.value || 0) % accounts.length
+    database
+      .prepare(`
+        INSERT INTO app_settings (key, value) VALUES ('pool_cursor', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `)
+      .run(String((cursor + 1) % accounts.length))
+    return [...accounts.slice(cursor), ...accounts.slice(0, cursor)]
+  })()
+}
+
+export function listManagedApiKeys(): ManagedApiKey[] {
+  return getDb().prepare('SELECT * FROM api_keys ORDER BY id DESC').all() as ManagedApiKey[]
+}
+
+export function createManagedApiKey(input: {
+  name: string
+  key_hash: string
+  key_prefix: string
+}): ManagedApiKey {
+  const result = getDb()
+    .prepare('INSERT INTO api_keys (name, key_hash, key_prefix) VALUES (?, ?, ?)')
+    .run(input.name, input.key_hash, input.key_prefix)
+  return getDb().prepare('SELECT * FROM api_keys WHERE id = ?').get(result.lastInsertRowid) as ManagedApiKey
+}
+
+export function deleteManagedApiKey(id: number) {
+  return getDb().prepare('DELETE FROM api_keys WHERE id = ?').run(id)
 }
 
 export function createSession(token: string, hours = 24 * 7) {

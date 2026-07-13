@@ -17,6 +17,12 @@ export function formatPercent(value: number | null | undefined): string {
   return `${value}%`
 }
 
+export function formatQuotaAmount(value: number | null | undefined, limit: number): string {
+  if (value == null) return '-'
+  const used = Math.max(0, value) / 100 * limit
+  return `$${used.toFixed(2)} / $${limit.toFixed(0)}`
+}
+
 export function formatDate(value: string | null | undefined): string {
   if (!value) return '-'
   try {

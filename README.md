@@ -8,14 +8,23 @@ Nuxt UI 全栈号池管理：SQLite 存储账号，通过浏览器 Cookie 自动
 - 号池 CRUD：粘贴 auth cookie 自动同步
 - 解析 workspace、邮箱、滚动/周/月用量、推荐码
 - 单号刷新 / 全部刷新
-- 定时任务每 5 分钟自动刷新（Nitro tasks）
+- OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
+- 默认轮询号池，上游报错时自动刷新额度并故障转移
+- 额度耗尽自动禁用并在窗口释放后恢复，会员过期自动禁用
+- 记录三个额度窗口的绝对刷新节点，按节点自动刷新
+- 非会员筛选与批量删除
+- 按滚动 $5、每周 $30、每月 $60 统计金额
 
 ## 配置
 
 ```yaml
 # config.yaml
 admin_key: "admin123"
+api_keys:
+  - "sk-ocm-your-client-key"
 ```
+
+也可以登录后台后，在「API 密钥」页面创建或删除对外访问密钥。网页创建的密钥只在创建成功时显示一次，服务端仅保存 SHA-256 摘要。
 
 ## 开发
 
@@ -56,3 +65,16 @@ bun run dev
 | POST | `/api/accounts/:id/refresh` | 刷新单号 |
 | POST | `/api/accounts/refresh-all` | 刷新全部 |
 | GET | `/api/stats` | 统计 |
+| GET | `/api/api-keys` | 对外 API 密钥列表（仅显示掩码） |
+| POST | `/api/api-keys` | 创建对外 API 密钥 |
+| DELETE | `/api/api-keys/:id` | 删除网页创建的密钥 |
+| DELETE | `/api/accounts/non-members` | 删除全部非会员账号 |
+| GET | `/v1/models` | OpenAI 兼容模型列表 |
+| POST | `/v1/chat/completions` | OpenAI 兼容聊天接口 |
+
+OpenAI 客户端配置：
+
+```text
+Base URL: http://localhost:3000/v1
+API Key: config.yaml 或网页创建的密钥
+```

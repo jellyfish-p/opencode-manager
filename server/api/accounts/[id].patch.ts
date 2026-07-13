@@ -15,7 +15,11 @@ export default defineEventHandler(async (event) => {
   const updated = updateAccount(id, {
     ...(body.name !== undefined ? { name: body.name } : {}),
     ...(body.auth_cookie !== undefined ? { auth_cookie: body.auth_cookie.trim() } : {}),
-    ...(body.status !== undefined ? { status: body.status } : {})
+    ...(body.status !== undefined
+      ? body.status === 'disabled'
+        ? { status: body.status, disabled_reason: 'manual', auto_enable_at: null }
+        : { status: body.status, disabled_reason: null, auto_enable_at: null }
+      : {})
   })
 
   return toPublicAccount(updated!)

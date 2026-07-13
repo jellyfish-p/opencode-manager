@@ -9,7 +9,8 @@ export default defineNuxtConfig({
       tasks: true
     },
     scheduledTasks: {
-      '*/5 * * * *': ['refresh-accounts']
+      '* * * * *': ['refresh-accounts'],
+      '*/15 * * * *': ['refresh-memberships']
     },
     externals: {
       traceInclude: ['better-sqlite3']

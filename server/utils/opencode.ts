@@ -97,13 +97,13 @@ function parseHydration(html: string): OpenCodeAccountInfo {
   }
 
   const emailMatch = html.match(/\$R\[28\]\(\$R\[\d+\],\s*"([^"]+@[^"]+)"\)/)
-  if (emailMatch) result.email = emailMatch[1]
+  if (emailMatch) result.email = emailMatch[1] || null
 
   const workspaceMatch = html.match(
     /id:\s*"((?:wrk_)[A-Z0-9]+)"\s*,\s*name:\s*"([^"]*)"/i
   )
   if (workspaceMatch) {
-    result.workspaceId = workspaceMatch[1]
+    result.workspaceId = workspaceMatch[1] || null
     result.workspaceName = workspaceMatch[2] || null
   }
 
@@ -135,14 +135,14 @@ function parseHydration(html: string): OpenCodeAccountInfo {
   }
 
   const referralMatch = html.match(/referralCode:\s*"([A-Z0-9]+)"/i)
-  if (referralMatch) result.referralCode = referralMatch[1]
+  if (referralMatch) result.referralCode = referralMatch[1] || null
 
   if (html.includes('您已订阅 OpenCode Go') || html.includes('subscribed to OpenCode Go')) {
     result.subscriptionStatus = 'active'
-  } else if (html.includes('liteSubscriptionID')) {
+  } else if (/liteSubscriptionID:\s*"[^"]+"/.test(html)) {
     result.subscriptionStatus = 'active'
   } else {
-    result.subscriptionStatus = 'unknown'
+    result.subscriptionStatus = 'inactive'
   }
 
   return result
@@ -231,4 +231,21 @@ export async function fetchOpenCodeAccount(
 
   const workspaceId = await resolveWorkspaceId(cookie)
   return loadWorkspace(cookie, workspaceId)
+}
+
+export async function fetchOpenCodeApiKey(
+  authCookie: string,
+  workspaceId: string
+): Promise<string | null> {
+  const cookie = buildAuthCookie(authCookie)
+  const response = await fetch(`${BASE}/workspace/${workspaceId}/keys`, {
+    method: 'GET',
+    redirect: 'follow',
+    headers: commonHeaders(cookie)
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load API keys page (status ${response.status})`)
+  }
+  const html = await response.text()
+  return html.match(/key:\s*"(sk-[^"\\]+)"/)?.[1] || null
 }

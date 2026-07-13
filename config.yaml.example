@@ -1,1 +1,3 @@
 admin_key: "change-me"
+api_keys:
+  - "sk-ocm-change-me"

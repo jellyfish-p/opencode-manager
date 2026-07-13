@@ -6,10 +6,10 @@ const refreshing = ref(false)
 await Promise.all([fetchAccounts(), fetchStats()])
 
 const cards = computed(() => [
-  { label: '账号总数', value: stats.value?.total ?? 0, icon: 'i-lucide-users', color: 'primary' as const },
+  { label: '会员账号', value: `${stats.value?.members ?? 0} / ${stats.value?.total ?? 0}`, icon: 'i-lucide-users', color: 'primary' as const },
   { label: '正常', value: stats.value?.active ?? 0, icon: 'i-lucide-check-circle', color: 'success' as const },
   { label: '异常', value: stats.value?.error ?? 0, icon: 'i-lucide-circle-alert', color: 'error' as const },
-  { label: '平均滚动用量', value: `${stats.value?.avgRolling ?? 0}%`, icon: 'i-lucide-activity', color: 'info' as const }
+  { label: '滚动已用金额', value: `$${(stats.value?.rollingUsedAmount ?? 0).toFixed(2)}`, icon: 'i-lucide-dollar-sign', color: 'info' as const }
 ])
 
 const recent = computed(() => accounts.value.slice(0, 5))
@@ -118,6 +118,7 @@ async function onRefreshAll() {
               <span>{{ stats?.avgRolling ?? 0 }}%</span>
             </div>
             <UProgress :model-value="stats?.avgRolling ?? 0" />
+            <p class="mt-1 text-xs text-muted">${{ stats?.rollingUsedAmount?.toFixed?.(2) ?? '0.00' }} / ${{ stats?.rollingLimitAmount?.toFixed?.(2) ?? '0.00' }}</p>
           </div>
           <div>
             <div class="mb-1 flex justify-between text-sm">
@@ -125,6 +126,7 @@ async function onRefreshAll() {
               <span>{{ stats?.avgWeekly ?? 0 }}%</span>
             </div>
             <UProgress :model-value="stats?.avgWeekly ?? 0" color="info" />
+            <p class="mt-1 text-xs text-muted">${{ stats?.weeklyUsedAmount?.toFixed?.(2) ?? '0.00' }} / ${{ stats?.weeklyLimitAmount?.toFixed?.(2) ?? '0.00' }}</p>
           </div>
           <div>
             <div class="mb-1 flex justify-between text-sm">
@@ -132,6 +134,7 @@ async function onRefreshAll() {
               <span>{{ stats?.avgMonthly ?? 0 }}%</span>
             </div>
             <UProgress :model-value="stats?.avgMonthly ?? 0" color="warning" />
+            <p class="mt-1 text-xs text-muted">${{ stats?.monthlyUsedAmount?.toFixed?.(2) ?? '0.00' }} / ${{ stats?.monthlyLimitAmount?.toFixed?.(2) ?? '0.00' }}</p>
           </div>
           <USeparator />
           <div class="flex items-center justify-between text-sm">
@@ -141,6 +144,10 @@ async function onRefreshAll() {
           <div class="flex items-center justify-between text-sm">
             <span class="text-muted">禁用账号</span>
             <span>{{ stats?.disabled ?? 0 }}</span>
+          </div>
+          <div class="flex items-center justify-between text-sm">
+            <span class="text-muted">非会员账号</span>
+            <span>{{ stats?.nonMembers ?? 0 }}</span>
           </div>
         </div>
       </UCard>

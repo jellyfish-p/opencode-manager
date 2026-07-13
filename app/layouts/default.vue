@@ -4,7 +4,8 @@ const route = useRoute()
 
 const links = [
   { label: '仪表盘', to: '/', icon: 'i-lucide-layout-dashboard' },
-  { label: '号池', to: '/accounts', icon: 'i-lucide-users' }
+  { label: '号池', to: '/accounts', icon: 'i-lucide-users' },
+  { label: 'API 密钥', to: '/api-keys', icon: 'i-lucide-key-round' }
 ]
 </script>
 

@@ -9,6 +9,7 @@ const {
   addAccount,
   updateAccount,
   removeAccount,
+  removeNonMembers,
   refreshAccount,
   refreshAll
 } = useAccounts()
@@ -23,6 +24,21 @@ const editing = ref<Account | null>(null)
 const submitting = ref(false)
 const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
+const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
+
+const filteredAccounts = computed(() => {
+  if (membershipFilter.value === 'member') {
+    return accounts.value.filter(account => account.subscription_status === 'active')
+  }
+  if (membershipFilter.value === 'non-member') {
+    return accounts.value.filter(account => account.subscription_status !== 'active')
+  }
+  return accounts.value
+})
+
+const nonMemberCount = computed(() =>
+  accounts.value.filter(account => account.subscription_status !== 'active').length
+)
 
 await Promise.all([fetchAccounts(), fetchStats()])
 
@@ -42,6 +58,18 @@ function openEditModal(account: Account) {
   formName.value = account.name || ''
   formCookie.value = ''
   openEdit.value = true
+}
+
+function closeAddModal() {
+  openAdd.value = false
+}
+
+function closeEditModal() {
+  openEdit.value = false
+}
+
+function setMembershipFilter(value: 'all' | 'member' | 'non-member') {
+  membershipFilter.value = value
 }
 
 async function onAdd() {
@@ -137,6 +165,16 @@ async function onRefreshAll() {
     refreshingAll.value = false
   }
 }
+
+async function onDeleteNonMembers() {
+  if (!nonMemberCount.value || !confirm(`确认删除 ${nonMemberCount.value} 个非会员账号？`)) return
+  try {
+    const result = await removeNonMembers()
+    toast.add({ title: `已删除 ${result.deleted} 个非会员账号`, color: 'success' })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || '批量删除失败', color: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -162,6 +200,15 @@ async function onRefreshAll() {
       </div>
     </div>
 
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex gap-2">
+        <UButton :variant="membershipFilter === 'all' ? 'soft' : 'ghost'" color="neutral" @click="setMembershipFilter('all')">全部 {{ accounts.length }}</UButton>
+        <UButton :variant="membershipFilter === 'member' ? 'soft' : 'ghost'" color="neutral" @click="setMembershipFilter('member')">会员 {{ accounts.length - nonMemberCount }}</UButton>
+        <UButton :variant="membershipFilter === 'non-member' ? 'soft' : 'ghost'" color="neutral" @click="setMembershipFilter('non-member')">非会员 {{ nonMemberCount }}</UButton>
+      </div>
+      <UButton v-if="nonMemberCount" icon="i-lucide-trash-2" color="error" variant="outline" @click="onDeleteNonMembers">删除全部非会员</UButton>
+    </div>
+
     <UCard :ui="{ body: 'p-0 sm:p-0' }">
       <div v-if="!accounts.length" class="py-16 text-center">
         <UIcon name="i-lucide-inbox" class="mx-auto size-10 text-muted" />
@@ -185,7 +232,7 @@ async function onRefreshAll() {
           </thead>
           <tbody>
             <tr
-              v-for="account in accounts"
+              v-for="account in filteredAccounts"
               :key="account.id"
               class="border-b border-default last:border-0 hover:bg-elevated/40"
             >
@@ -199,6 +246,14 @@ async function onRefreshAll() {
                 <div v-if="account.workspace_id" class="text-xs text-muted">
                   {{ account.workspace_id }}
                 </div>
+                <div class="mt-1 flex flex-wrap gap-1">
+                  <UBadge :color="account.subscription_status === 'active' ? 'success' : 'error'" variant="subtle" size="sm">
+                    {{ account.subscription_status === 'active' ? '会员' : '非会员' }}
+                  </UBadge>
+                  <UBadge :color="account.has_upstream_api_key ? 'info' : 'warning'" variant="subtle" size="sm">
+                    {{ account.has_upstream_api_key ? '上游 Key 已同步' : '缺少上游 Key' }}
+                  </UBadge>
+                </div>
                 <div v-if="account.last_error" class="mt-1 max-w-xs truncate text-xs text-error">
                   {{ account.last_error }}
                 </div>
@@ -207,24 +262,30 @@ async function onRefreshAll() {
                 <UBadge :color="statusColor(account.status)" variant="subtle">
                   {{ account.status }}
                 </UBadge>
+                <div v-if="account.disabled_reason" class="mt-1 text-xs text-muted">{{ account.disabled_reason }}</div>
+                <div v-if="account.auto_enable_at" class="mt-1 text-xs text-muted">恢复 {{ formatDate(account.auto_enable_at) }}</div>
               </td>
               <td class="px-4 py-3">
                 <div>{{ formatPercent(account.rolling_usage) }}</div>
-                <div class="text-xs text-muted">{{ formatReset(account.rolling_reset_sec) }}</div>
+                <div class="text-xs text-muted">{{ formatQuotaAmount(account.rolling_usage, 5) }}</div>
+                <div class="text-xs text-muted">{{ formatDate(account.rolling_reset_at) }}</div>
               </td>
               <td class="px-4 py-3">
                 <div>{{ formatPercent(account.weekly_usage) }}</div>
-                <div class="text-xs text-muted">{{ formatReset(account.weekly_reset_sec) }}</div>
+                <div class="text-xs text-muted">{{ formatQuotaAmount(account.weekly_usage, 30) }}</div>
+                <div class="text-xs text-muted">{{ formatDate(account.weekly_reset_at) }}</div>
               </td>
               <td class="px-4 py-3">
                 <div>{{ formatPercent(account.monthly_usage) }}</div>
-                <div class="text-xs text-muted">{{ formatReset(account.monthly_reset_sec) }}</div>
+                <div class="text-xs text-muted">{{ formatQuotaAmount(account.monthly_usage, 60) }}</div>
+                <div class="text-xs text-muted">{{ formatDate(account.monthly_reset_at) }}</div>
               </td>
               <td class="px-4 py-3 font-mono text-xs">
                 {{ account.referral_code || '-' }}
               </td>
               <td class="px-4 py-3 text-xs text-muted">
-                {{ formatDate(account.last_synced_at) }}
+                <div>{{ formatDate(account.last_synced_at) }}</div>
+                <div v-if="account.next_quota_refresh_at">下次 {{ formatDate(account.next_quota_refresh_at) }}</div>
               </td>
               <td class="px-4 py-3">
                 <div class="flex justify-end gap-1">
@@ -291,7 +352,7 @@ async function onRefreshAll() {
       </template>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <UButton color="neutral" variant="ghost" @click="openAdd = false">取消</UButton>
+          <UButton color="neutral" variant="ghost" @click="closeAddModal">取消</UButton>
           <UButton color="primary" :loading="submitting" @click="onAdd">添加并同步</UButton>
         </div>
       </template>
@@ -315,7 +376,7 @@ async function onRefreshAll() {
       </template>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <UButton color="neutral" variant="ghost" @click="openEdit = false">取消</UButton>
+          <UButton color="neutral" variant="ghost" @click="closeEditModal">取消</UButton>
           <UButton color="primary" :loading="submitting" @click="onEdit">保存</UButton>
         </div>
       </template>

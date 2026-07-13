@@ -11,9 +11,17 @@ export interface Account {
   weekly_reset_sec: number | null
   monthly_usage: number | null
   monthly_reset_sec: number | null
+  rolling_reset_at: string | null
+  weekly_reset_at: string | null
+  monthly_reset_at: string | null
+  next_quota_refresh_at: string | null
+  quota_refreshed_at: string | null
   referral_code: string | null
   subscription_status: string | null
+  has_upstream_api_key: boolean
   status: 'pending' | 'active' | 'error' | 'disabled'
+  disabled_reason: string | null
+  auto_enable_at: string | null
   last_error: string | null
   last_synced_at: string | null
   created_at: string
@@ -26,10 +34,18 @@ export interface Stats {
   error: number
   disabled: number
   pending: number
+  members: number
+  nonMembers: number
   avgRolling: number
   avgWeekly: number
   avgMonthly: number
   totalBalance: number
+  rollingUsedAmount: number
+  weeklyUsedAmount: number
+  monthlyUsedAmount: number
+  rollingLimitAmount: number
+  weeklyLimitAmount: number
+  monthlyLimitAmount: number
 }
 
 export function useAccounts() {
@@ -74,6 +90,14 @@ export function useAccounts() {
     await Promise.all([fetchAccounts(), fetchStats()])
   }
 
+  async function removeNonMembers() {
+    const result = await requestFetch<{ ok: boolean; deleted: number }>('/api/accounts/non-members', {
+      method: 'DELETE'
+    })
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return result
+  }
+
   async function refreshAccount(id: number) {
     const account = await requestFetch<Account>(`/api/accounts/${id}/refresh`, { method: 'POST' })
     await Promise.all([fetchAccounts(), fetchStats()])
@@ -99,6 +123,7 @@ export function useAccounts() {
     addAccount,
     updateAccount,
     removeAccount,
+    removeNonMembers,
     refreshAccount,
     refreshAll
   }
