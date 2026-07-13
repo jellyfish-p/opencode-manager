@@ -1,15 +1,21 @@
-FROM oven/bun:1.3.14-debian AS builder
+FROM oven/bun:1.3.14-debian AS bun
+
+FROM node:22-bookworm AS builder
 
 WORKDIR /app
 
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY package.json bun.lock nuxt.config.ts tsconfig.json ./
-RUN bun install --frozen-lockfile
+# Keep Bun's locked dependency graph, but build native modules with the same
+# Node.js major version used by the production image.
+RUN bun install --frozen-lockfile --ignore-scripts \
+    && npm rebuild better-sqlite3
 
 COPY app ./app
 COPY public ./public
 COPY server ./server
 
-RUN bun run build
+RUN npm run build
 
 FROM node:22-bookworm-slim AS runner
 
