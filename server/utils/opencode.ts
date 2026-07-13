@@ -148,23 +148,17 @@ function parseHydration(html: string): OpenCodeAccountInfo {
   return result
 }
 
-export async function fetchOpenCodeAccount(authCookie: string): Promise<OpenCodeAccountInfo> {
-  const cookie = buildAuthCookie(authCookie)
-
-  // Step 1: GET /auth with redirect:manual — valid cookie returns 302 Location: /workspace/wrk_xxx
+async function resolveWorkspaceId(cookie: string): Promise<string> {
   const authRes = await fetch(`${BASE}/auth`, {
     method: 'GET',
     redirect: 'manual',
     headers: commonHeaders(cookie)
   })
 
-  const location =
-    authRes.headers.get('location') ||
-    authRes.headers.get('Location')
-
-  // Primary path: parse workspace id from 302 Location header
+  const location = authRes.headers.get('location')
   let workspaceId: string | null = null
-  if (authRes.status === 301 || authRes.status === 302 || authRes.status === 303 || authRes.status === 307 || authRes.status === 308) {
+
+  if ([301, 302, 303, 307, 308].includes(authRes.status)) {
     workspaceId = extractWorkspaceId(location)
     if (!workspaceId) {
       throw new Error(
@@ -172,7 +166,6 @@ export async function fetchOpenCodeAccount(authCookie: string): Promise<OpenCode
       )
     }
   } else if (authRes.status === 200) {
-    // Fallback: some environments may return HTML with workspace links
     const body = await authRes.text().catch(() => '')
     workspaceId = extractWorkspaceId(body)
   }
@@ -183,7 +176,10 @@ export async function fetchOpenCodeAccount(authCookie: string): Promise<OpenCode
     )
   }
 
-  // Step 2: GET /workspace/{id}/go SSR page and parse hydration payload
+  return workspaceId
+}
+
+async function loadWorkspace(cookie: string, workspaceId: string): Promise<OpenCodeAccountInfo> {
   const goRes = await fetch(`${BASE}/workspace/${workspaceId}/go`, {
     method: 'GET',
     redirect: 'follow',
@@ -194,13 +190,35 @@ export async function fetchOpenCodeAccount(authCookie: string): Promise<OpenCode
     throw new Error(`Failed to load workspace page (status ${goRes.status})`)
   }
 
+  let finalPath = ''
+  try {
+    finalPath = new URL(goRes.url).pathname
+  } catch {
+    // An empty or invalid final URL is not a valid workspace response.
+  }
+
+  if (!finalPath.startsWith('/workspace/')) {
+    throw new Error(
+      `Workspace page redirected outside workspace (path: ${finalPath || 'unknown'})`
+    )
+  }
+
   const html = await goRes.text()
   const info = parseHydration(html)
-  info.workspaceId = info.workspaceId || workspaceId
 
   if (!info.email && !info.workspaceId) {
     throw new Error('Unable to parse account data from SSR page')
   }
 
+  info.workspaceId = info.workspaceId || workspaceId
   return info
+}
+
+export async function fetchOpenCodeAccount(
+  authCookie: string,
+  cachedWorkspaceId?: string | null
+): Promise<OpenCodeAccountInfo> {
+  const cookie = buildAuthCookie(authCookie)
+  const workspaceId = cachedWorkspaceId?.trim() || await resolveWorkspaceId(cookie)
+  return loadWorkspace(cookie, workspaceId)
 }
