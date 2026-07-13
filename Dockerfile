@@ -1,23 +1,18 @@
-FROM oven/bun:1.3.14-debian AS bun
-
-FROM node:22-bookworm AS builder
+FROM oven/bun:1.3.14-debian AS builder
 
 WORKDIR /app
 
-COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY package.json bun.lock nuxt.config.ts tsconfig.json ./
-# Keep Bun's locked dependency graph, but build native modules with the same
-# Node.js major version used by the production image.
-RUN bun install --frozen-lockfile --ignore-scripts \
-    && npm rebuild better-sqlite3
+RUN BUN_FEATURE_FLAG_DISABLE_NATIVE_DEPENDENCY_LINKER=1 \
+    bun install --frozen-lockfile --ignore-scripts
 
 COPY app ./app
 COPY public ./public
 COPY server ./server
 
-RUN npm run build
+RUN bun run build
 
-FROM node:22-bookworm-slim AS runner
+FROM oven/bun:1.3.14-debian AS runner
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
@@ -25,12 +20,12 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-COPY --from=builder --chown=node:node /app/.output ./.output
-RUN mkdir -p /app/data && chown -R node:node /app/data
+COPY --from=builder --chown=bun:bun /app/.output ./.output
+RUN mkdir -p /app/data && chown -R bun:bun /app/data
 
-USER node
+USER bun
 
 VOLUME ["/app/data"]
 EXPOSE 3000
 
-CMD ["node", ".output/server/index.mjs"]
+CMD ["bun", ".output/server/index.mjs"]

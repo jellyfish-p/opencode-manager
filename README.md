@@ -92,4 +92,4 @@ docker run -d \
   ghcr.io/jellyfish-p/opencode-manager:latest
 ```
 
-推送到 `main` 会发布 `main`、`latest` 和提交 SHA 标签；推送 `v*` 标签会额外发布对应的语义版本标签。工作流也支持手动触发。
+推送到 `main` 会发布 `main`、`latest` 和提交 SHA 标签；推送 `v*` 标签会额外发布对应的语义版本标签。工作流也支持手动触发。amd64 与 arm64 镜像分别在 GitHub 原生架构 Runner 上构建，再合并为多架构 Manifest，不使用 QEMU；镜像安装、构建和运行均使用 Bun。

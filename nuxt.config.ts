@@ -11,14 +11,6 @@ export default defineNuxtConfig({
     scheduledTasks: {
       '* * * * *': ['refresh-accounts'],
       '*/15 * * * *': ['refresh-memberships']
-    },
-    externals: {
-      traceInclude: ['better-sqlite3']
-    }
-  },
-  vite: {
-    optimizeDeps: {
-      exclude: ['better-sqlite3']
     }
   }
 })

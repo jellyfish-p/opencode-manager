@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { resolve } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 
@@ -47,7 +47,9 @@ export interface ManagedApiKey {
   created_at: string
 }
 
-let db: Database.Database | null = null
+type SQLiteValue = string | number | bigint | boolean | Uint8Array | null
+
+let db: Database | null = null
 
 export function getDb() {
   if (db) return db
@@ -55,9 +57,9 @@ export function getDb() {
   const dataDir = resolve(process.cwd(), 'data')
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true })
 
-  db = new Database(resolve(dataDir, 'opencode.db'))
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
+  db = new Database(resolve(dataDir, 'opencode.db'), { strict: true })
+  db.exec('PRAGMA journal_mode = WAL')
+  db.exec('PRAGMA foreign_keys = ON')
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS accounts (
@@ -121,7 +123,7 @@ export function toPublicAccount(row: Account): AccountPublic {
   return { ...rest, has_upstream_api_key: Boolean(upstream_api_key) }
 }
 
-function migrateAccountColumns(database: Database.Database) {
+function migrateAccountColumns(database: Database) {
   const existing = new Set(
     (database.prepare('PRAGMA table_info(accounts)').all() as Array<{ name: string }>).map(c => c.name)
   )
@@ -164,7 +166,7 @@ export function createAccount(input: { name?: string; auth_cookie: string }): Ac
 
 export function updateAccount(id: number, data: Partial<Account>) {
   const fields: string[] = []
-  const values: Record<string, unknown> = { id }
+  const values: Record<string, SQLiteValue> = { id }
 
   for (const [key, value] of Object.entries(data)) {
     if (key === 'id' || key === 'created_at') continue
