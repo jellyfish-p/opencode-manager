@@ -1,5 +1,5 @@
 export const QUOTA_LIMITS_USD = {
-  rolling: 5,
+  rolling: 12,
   weekly: 30,
   monthly: 60
 } as const
