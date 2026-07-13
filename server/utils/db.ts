@@ -24,7 +24,14 @@ export interface Account {
   next_quota_refresh_at: string | null
   quota_refreshed_at: string | null
   referral_code: string | null
+  last_referral_reward_id: string | null
+  last_referral_reward_applied_at: string | null
   subscription_status: string | null
+  cancelled_subscription_id: string | null
+  subscription_cancelled_at: string | null
+  subscription_cancel_checked_at: string | null
+  subscription_ends_at: string | null
+  subscription_cancel_error: string | null
   upstream_api_key: string | null
   status: AccountStatus
   disabled_reason: string | null
@@ -35,7 +42,7 @@ export interface Account {
   updated_at: string
 }
 
-export type AccountPublic = Omit<Account, 'auth_cookie' | 'upstream_api_key'> & {
+export type AccountPublic = Omit<Account, 'auth_cookie' | 'upstream_api_key' | 'cancelled_subscription_id'> & {
   has_upstream_api_key: boolean
 }
 
@@ -82,7 +89,14 @@ export function getDb() {
       next_quota_refresh_at TEXT,
       quota_refreshed_at TEXT,
       referral_code TEXT,
+      last_referral_reward_id TEXT,
+      last_referral_reward_applied_at TEXT,
       subscription_status TEXT,
+      cancelled_subscription_id TEXT,
+      subscription_cancelled_at TEXT,
+      subscription_cancel_checked_at TEXT,
+      subscription_ends_at TEXT,
+      subscription_cancel_error TEXT,
       upstream_api_key TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       disabled_reason TEXT,
@@ -119,7 +133,7 @@ export function getDb() {
 }
 
 export function toPublicAccount(row: Account): AccountPublic {
-  const { auth_cookie: _, upstream_api_key, ...rest } = row
+  const { auth_cookie: _, upstream_api_key, cancelled_subscription_id: __, ...rest } = row
   return { ...rest, has_upstream_api_key: Boolean(upstream_api_key) }
 }
 
@@ -133,6 +147,13 @@ function migrateAccountColumns(database: Database) {
     monthly_reset_at: 'TEXT',
     next_quota_refresh_at: 'TEXT',
     quota_refreshed_at: 'TEXT',
+    last_referral_reward_id: 'TEXT',
+    last_referral_reward_applied_at: 'TEXT',
+    cancelled_subscription_id: 'TEXT',
+    subscription_cancelled_at: 'TEXT',
+    subscription_cancel_checked_at: 'TEXT',
+    subscription_ends_at: 'TEXT',
+    subscription_cancel_error: 'TEXT',
     upstream_api_key: 'TEXT',
     disabled_reason: 'TEXT',
     auto_enable_at: 'TEXT'

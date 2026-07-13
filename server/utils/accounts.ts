@@ -1,14 +1,125 @@
 import type { Account, AccountStatus } from './db'
 
-export async function refreshAccount(id: number): Promise<Account> {
+const accountRefreshes = new Map<number, Promise<Account>>()
+
+function quotaFromInfo(info: Awaited<ReturnType<typeof fetchOpenCodeAccount>>, now: Date) {
+  const rollingResetAt = resetAtFromSeconds(info.rollingResetSec, now)
+  const weeklyResetAt = resetAtFromSeconds(info.weeklyResetSec, now)
+  const monthlyResetAt = resetAtFromSeconds(info.monthlyResetSec, now)
+  const quota = analyzeQuota({
+    rollingUsage: info.rollingUsage,
+    rollingResetAt,
+    weeklyUsage: info.weeklyUsage,
+    weeklyResetAt,
+    monthlyUsage: info.monthlyUsage,
+    monthlyResetAt
+  })
+  return { rollingResetAt, weeklyResetAt, monthlyResetAt, quota }
+}
+
+export function refreshAccount(id: number): Promise<Account> {
+  const pending = accountRefreshes.get(id)
+  if (pending) return pending
+
+  const refresh = refreshAccountOnce(id).finally(() => {
+    if (accountRefreshes.get(id) === refresh) accountRefreshes.delete(id)
+  })
+  accountRefreshes.set(id, refresh)
+  return refresh
+}
+
+async function refreshAccountOnce(id: number): Promise<Account> {
   const account = getAccount(id)
   if (!account) {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
   }
 
   try {
-    const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id)
+    let info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id)
+    let referralError: string | null = null
+    const attemptedRewards = new Set<string>()
+
+    while (
+      account.disabled_reason !== 'manual' &&
+      info.subscriptionStatus === 'active' &&
+      attemptedRewards.size < 20
+    ) {
+      const currentQuota = quotaFromInfo(info, new Date()).quota
+      if (!currentQuota.exhausted.length) break
+
+      const referralId = info.availableReferralRewardIds.find(id => !attemptedRewards.has(id))
+      if (!referralId) break
+      if (!info.workspaceId || !info.referralApplyServerId) {
+        referralError = 'Available referral reward found, but the apply action could not be resolved'
+        break
+      }
+
+      attemptedRewards.add(referralId)
+      try {
+        await applyOpenCodeReferralReward(
+          account.auth_cookie,
+          info.workspaceId,
+          referralId,
+          info.referralApplyServerId
+        )
+      } catch (error) {
+        const latest = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId)
+        if (latest.availableReferralRewardIds.includes(referralId)) throw error
+        // Another process applied the same reward after this refresh began.
+        info = latest
+      }
+
+      const appliedAt = new Date().toISOString()
+      updateAccount(id, {
+        last_referral_reward_id: referralId,
+        last_referral_reward_applied_at: appliedAt
+      })
+      info = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId)
+    }
+
     const workspaceId = info.workspaceId || account.workspace_id
+    const subscriptionUpdate: Partial<Account> = {}
+    if (info.subscriptionStatus === 'active' && info.liteSubscriptionId && workspaceId) {
+      const checkedAt = account.subscription_cancel_checked_at
+        ? new Date(account.subscription_cancel_checked_at).getTime()
+        : 0
+      const checkExpired = !Number.isFinite(checkedAt) || Date.now() - checkedAt >= 24 * 60 * 60 * 1000
+      const shouldCheck =
+        account.cancelled_subscription_id !== info.liteSubscriptionId ||
+        !account.subscription_cancelled_at ||
+        checkExpired
+
+      if (shouldCheck) {
+        if (!info.billingPortalServerId) {
+          subscriptionUpdate.subscription_cancel_error =
+            'Active subscription found, but the billing portal action could not be resolved'
+        } else {
+          try {
+            const cancellation = await cancelOpenCodeSubscriptionRenewal(
+              account.auth_cookie,
+              workspaceId,
+              info.liteSubscriptionId,
+              info.billingPortalServerId
+            )
+            const cancelledAt = new Date().toISOString()
+            subscriptionUpdate.cancelled_subscription_id = info.liteSubscriptionId
+            subscriptionUpdate.subscription_cancelled_at =
+              cancellation.alreadyCancelled &&
+              account.cancelled_subscription_id === info.liteSubscriptionId &&
+              account.subscription_cancelled_at
+                ? account.subscription_cancelled_at
+                : cancelledAt
+            subscriptionUpdate.subscription_cancel_checked_at = cancelledAt
+            subscriptionUpdate.subscription_ends_at = cancellation.currentPeriodEnd
+            subscriptionUpdate.subscription_cancel_error = null
+          } catch (error) {
+            subscriptionUpdate.subscription_cancel_error =
+              error instanceof Error ? error.message : String(error)
+          }
+        }
+      }
+    }
+
     let upstreamApiKey = account.upstream_api_key
     if (workspaceId) {
       try {
@@ -18,17 +129,7 @@ export async function refreshAccount(id: number): Promise<Account> {
       }
     }
     const now = new Date()
-    const rollingResetAt = resetAtFromSeconds(info.rollingResetSec, now)
-    const weeklyResetAt = resetAtFromSeconds(info.weeklyResetSec, now)
-    const monthlyResetAt = resetAtFromSeconds(info.monthlyResetSec, now)
-    const quota = analyzeQuota({
-      rollingUsage: info.rollingUsage,
-      rollingResetAt,
-      weeklyUsage: info.weeklyUsage,
-      weeklyResetAt,
-      monthlyUsage: info.monthlyUsage,
-      monthlyResetAt
-    })
+    const { rollingResetAt, weeklyResetAt, monthlyResetAt, quota } = quotaFromInfo(info, now)
     const isMember = info.subscriptionStatus === 'active'
     const isManuallyDisabled = account.status === 'disabled' && account.disabled_reason === 'manual'
     const status: AccountStatus = isManuallyDisabled
@@ -61,11 +162,12 @@ export async function refreshAccount(id: number): Promise<Account> {
       quota_refreshed_at: now.toISOString(),
       referral_code: info.referralCode,
       subscription_status: info.subscriptionStatus,
+      ...subscriptionUpdate,
       upstream_api_key: upstreamApiKey,
       status,
       disabled_reason: disabledReason,
       auto_enable_at: disabledReason?.startsWith('quota:') ? quota.autoEnableAt : null,
-      last_error: null,
+      last_error: referralError,
       last_synced_at: now.toISOString()
     })!
   } catch (err) {

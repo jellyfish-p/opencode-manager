@@ -59,7 +59,7 @@ beforeAll(async () => {
   await writeFile(join(testDirectory, 'config.yaml'), rawConfig)
 
   baseUrl = `http://127.0.0.1:${port}`
-  server = spawn('node', [resolve('.output/server/index.mjs')], {
+  server = spawn(process.execPath, [resolve('.output/server/index.mjs')], {
     cwd: testDirectory,
     env: {
       ...process.env,

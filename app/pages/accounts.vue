@@ -276,6 +276,15 @@ async function copyReferralLink(code: string) {
                   <UBadge :color="account.has_upstream_api_key ? 'info' : 'warning'" variant="subtle" size="sm">
                     {{ account.has_upstream_api_key ? '上游 Key 已同步' : '缺少上游 Key' }}
                   </UBadge>
+                  <UBadge v-if="account.subscription_cancelled_at" color="neutral" variant="subtle" size="sm">
+                    已取消续费
+                  </UBadge>
+                </div>
+                <div v-if="account.subscription_ends_at" class="mt-1 text-xs text-muted">
+                  会员有效期至 {{ formatDate(account.subscription_ends_at) }}
+                </div>
+                <div v-if="account.subscription_cancel_error" class="mt-1 max-w-xs truncate text-xs text-error">
+                  取消续费失败：{{ account.subscription_cancel_error }}
                 </div>
                 <div v-if="account.last_error" class="mt-1 max-w-xs truncate text-xs text-error">
                   {{ account.last_error }}
@@ -290,7 +299,7 @@ async function copyReferralLink(code: string) {
               </td>
               <td class="px-4 py-3">
                 <div>{{ formatPercent(account.rolling_usage) }}</div>
-                <div class="text-xs text-muted">{{ formatQuotaAmount(account.rolling_usage, 5) }}</div>
+                <div class="text-xs text-muted">{{ formatQuotaAmount(account.rolling_usage, 12) }}</div>
                 <div class="text-xs text-muted">{{ formatDate(account.rolling_reset_at) }}</div>
               </td>
               <td class="px-4 py-3">

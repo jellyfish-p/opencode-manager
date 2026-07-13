@@ -18,6 +18,10 @@ export interface Account {
   quota_refreshed_at: string | null
   referral_code: string | null
   subscription_status: string | null
+  subscription_cancelled_at: string | null
+  subscription_cancel_checked_at: string | null
+  subscription_ends_at: string | null
+  subscription_cancel_error: string | null
   has_upstream_api_key: boolean
   status: 'pending' | 'active' | 'error' | 'disabled'
   disabled_reason: string | null

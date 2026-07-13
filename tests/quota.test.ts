@@ -2,9 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import { analyzeQuota, QUOTA_LIMITS_USD, resetAtFromSeconds, usedAmount } from '../server/utils/quota'
 
 describe('quota accounting', () => {
-  test('uses the configured 5/30/60 dollar windows', () => {
-    expect(QUOTA_LIMITS_USD).toEqual({ rolling: 5, weekly: 30, monthly: 60 })
-    expect(usedAmount(50, QUOTA_LIMITS_USD.rolling)).toBe(2.5)
+  test('uses the configured 12/30/60 dollar windows', () => {
+    expect(QUOTA_LIMITS_USD).toEqual({ rolling: 12, weekly: 30, monthly: 60 })
+    expect(usedAmount(50, QUOTA_LIMITS_USD.rolling)).toBe(6)
     expect(usedAmount(25, QUOTA_LIMITS_USD.weekly)).toBe(7.5)
     expect(usedAmount(10, QUOTA_LIMITS_USD.monthly)).toBe(6)
   })

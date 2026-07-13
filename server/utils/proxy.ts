@@ -68,7 +68,8 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
       if (
         refreshed?.status === 'active' &&
         refreshed.upstream_api_key &&
-        refreshed.upstream_api_key !== account.upstream_api_key
+        (refreshed.upstream_api_key !== account.upstream_api_key ||
+          refreshed.last_referral_reward_applied_at !== account.last_referral_reward_applied_at)
       ) {
         const retry = await fetch(`${GO_BASE}/chat/completions`, {
           method: 'POST',
