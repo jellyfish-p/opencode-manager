@@ -50,6 +50,7 @@ bun run dev
 
 - SQLite: `data/opencode.db`
 - Cookie 仅存服务端，API 不回传 `auth_cookie`
+- 可通过 `DATA_DIR` 环境变量修改数据目录（Docker 镜像默认为 `/app/data`）
 
 ## API
 
@@ -91,5 +92,7 @@ docker run -d \
   -v "$PWD/data:/app/data" \
   ghcr.io/jellyfish-p/opencode-manager:latest
 ```
+
+容器启动时会修复挂载数据目录的所有权，然后以非 root 的 `bun` 用户运行服务。若平台强制使用自定义非 root UID，请确保该 UID 对 `DATA_DIR` 有写权限。
 
 推送到 `main` 会发布 `main`、`latest` 和提交 SHA 标签；推送 `v*` 标签会额外发布对应的语义版本标签。工作流也支持手动触发。amd64 与 arm64 镜像分别在 GitHub 原生架构 Runner 上构建，再合并为多架构 Manifest，不使用 QEMU；镜像安装、构建和运行均使用 Bun。

@@ -54,7 +54,7 @@ let db: Database | null = null
 export function getDb() {
   if (db) return db
 
-  const dataDir = resolve(process.cwd(), 'data')
+  const dataDir = resolve(process.cwd(), process.env.DATA_DIR || 'data')
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true })
 
   db = new Database(resolve(dataDir, 'opencode.db'), { strict: true })

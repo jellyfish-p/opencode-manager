@@ -16,16 +16,17 @@ FROM oven/bun:1.3.14-debian AS runner
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    DATA_DIR=/app/data
 
 WORKDIR /app
 
 COPY --from=builder --chown=bun:bun /app/.output ./.output
 RUN mkdir -p /app/data && chown -R bun:bun /app/data
-
-USER bun
+COPY --chown=root:root --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 VOLUME ["/app/data"]
 EXPOSE 3000
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["bun", ".output/server/index.mjs"]
