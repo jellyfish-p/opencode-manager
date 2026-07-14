@@ -16,5 +16,6 @@ export default defineEventHandler(async (event) => {
     return toPublicAccount(refreshed)
   }
 
+  updateAccountPollSchedule(account)
   return toPublicAccount(account)
 })

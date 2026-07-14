@@ -5,6 +5,10 @@ export default defineNuxtConfig({
   modules: ['@nuxt/ui'],
   css: ['~/assets/css/main.css'],
   nitro: {
+    preset: 'node-server',
+    externals: {
+      external: ['better-sqlite3']
+    },
     experimental: {
       tasks: true
     },

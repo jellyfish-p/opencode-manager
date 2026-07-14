@@ -4,7 +4,7 @@ export default defineTask({
     description: 'Refresh account membership and quota state periodically'
   },
   async run() {
-    const results = await refreshAllAccounts()
+    const results = await refreshDueMembershipAccounts()
     return {
       result: {
         count: results.length,

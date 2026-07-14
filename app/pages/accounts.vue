@@ -11,6 +11,9 @@ const {
   removeAccount,
   removeNonMembers,
   refreshAccount,
+  fetchReferralRewards,
+  useReferralReward,
+  cancelRenewal,
   refreshAll
 } = useAccounts()
 
@@ -18,10 +21,19 @@ const toast = useToast()
 
 const openAdd = ref(false)
 const openEdit = ref(false)
+const openActions = ref(false)
 const formName = ref('')
 const formCookie = ref('')
 const editing = ref<Account | null>(null)
+const actionAccount = ref<Account | null>(null)
 const submitting = ref(false)
+const accountAction = ref<'referral' | 'cancel-renewal' | null>(null)
+const referralRewardIds = ref<string[]>([])
+const referralRewardsCached = ref<boolean | null>(null)
+const referralRewardsLoading = ref(false)
+const referralRewardsError = ref(false)
+const selectedReferralRewardId = ref<string | null>(null)
+const confirmCancellation = ref(false)
 const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
@@ -60,12 +72,85 @@ function openEditModal(account: Account) {
   openEdit.value = true
 }
 
+async function openActionsModal(account: Account) {
+  actionAccount.value = account
+  confirmCancellation.value = false
+  referralRewardIds.value = []
+  referralRewardsCached.value = null
+  referralRewardsError.value = false
+  selectedReferralRewardId.value = null
+  openActions.value = true
+  referralRewardsLoading.value = true
+  try {
+    const result = await fetchReferralRewards(account.id)
+    if (actionAccount.value?.id !== account.id) return
+    referralRewardIds.value = result.rewardIds
+    referralRewardsCached.value = result.cached
+  } catch (e: any) {
+    if (actionAccount.value?.id === account.id) {
+      referralRewardsError.value = true
+      toast.add({ title: e?.data?.statusMessage || e?.message || '可用推广额度加载失败', color: 'error' })
+    }
+  } finally {
+    if (actionAccount.value?.id === account.id) referralRewardsLoading.value = false
+  }
+}
+
 function closeAddModal() {
   openAdd.value = false
 }
 
 function closeEditModal() {
   openEdit.value = false
+}
+
+function closeActionsModal() {
+  if (accountAction.value) return
+  openActions.value = false
+  confirmCancellation.value = false
+}
+
+async function onUseReferralReward(rewardId: string) {
+  if (!actionAccount.value) return
+  accountAction.value = 'referral'
+  selectedReferralRewardId.value = rewardId
+  try {
+    const result = await useReferralReward(actionAccount.value.id, rewardId)
+    actionAccount.value = result.account
+    referralRewardIds.value = result.rewardIds
+    referralRewardsCached.value = true
+    toast.add({
+      title: result.refreshed ? '推广额度已使用并刷新' : '推广额度已使用，但账户刷新失败',
+      description: result.refreshed
+        ? `奖励 ${result.rewardId}`
+        : `奖励 ${result.rewardId} 已使用，请稍后手动同步账户`,
+      color: result.refreshed ? 'success' : 'warning'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '推广额度使用失败', color: 'error' })
+  } finally {
+    accountAction.value = null
+    selectedReferralRewardId.value = null
+  }
+}
+
+async function onCancelRenewal() {
+  if (!actionAccount.value) return
+  accountAction.value = 'cancel-renewal'
+  try {
+    const result = await cancelRenewal(actionAccount.value.id)
+    actionAccount.value = result.account
+    confirmCancellation.value = false
+    toast.add({
+      title: result.alreadyCancelled ? '续费已处于关闭状态' : '已关闭自动续费',
+      description: result.currentPeriodEnd ? `会员有效期至 ${formatDate(result.currentPeriodEnd)}` : undefined,
+      color: 'success'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '关闭续费失败', color: 'error' })
+  } finally {
+    accountAction.value = null
+  }
 }
 
 function setMembershipFilter(value: 'all' | 'member' | 'non-member') {
@@ -332,6 +417,14 @@ async function copyReferralLink(code: string) {
               <td class="px-4 py-3">
                 <div class="flex justify-end gap-1">
                   <UButton
+                    icon="i-lucide-settings-2"
+                    size="xs"
+                    color="primary"
+                    variant="ghost"
+                    title="账户操作"
+                    @click="openActionsModal(account)"
+                  />
+                  <UButton
                     icon="i-lucide-refresh-cw"
                     size="xs"
                     color="neutral"
@@ -420,6 +513,142 @@ async function copyReferralLink(code: string) {
         <div class="flex justify-end gap-2">
           <UButton color="neutral" variant="ghost" @click="closeEditModal">取消</UButton>
           <UButton color="primary" :loading="submitting" @click="onEdit">保存</UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="openActions"
+      :title="`账户操作 · ${actionAccount?.name || actionAccount?.email || `#${actionAccount?.id || ''}`}`"
+      :dismissible="!accountAction"
+    >
+      <template #body>
+        <div v-if="actionAccount" class="space-y-4">
+          <div class="rounded-lg border border-default p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p class="font-medium text-highlighted">可用推广额度</p>
+                <p class="mt-1 text-sm text-muted">显示该账户最近一次同步时发现的可用奖励。</p>
+              </div>
+              <UBadge v-if="referralRewardsCached" color="primary" variant="subtle">
+                {{ referralRewardIds.length }} 笔
+              </UBadge>
+            </div>
+
+            <div v-if="referralRewardsLoading" class="mt-4 flex items-center gap-2 text-sm text-muted">
+              <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
+              正在读取缓存…
+            </div>
+            <UAlert
+              v-else-if="referralRewardsError"
+              class="mt-4"
+              color="error"
+              variant="subtle"
+              title="可用额度加载失败"
+              description="请关闭弹窗后重试。"
+            />
+            <UAlert
+              v-else-if="referralRewardsCached === false"
+              class="mt-4"
+              color="neutral"
+              variant="subtle"
+              title="尚无可用额度缓存"
+              description="请先同步该账号，再重新打开账户操作。"
+            />
+            <p v-else-if="referralRewardIds.length === 0" class="mt-4 text-sm text-muted">
+              暂无可用额度
+            </p>
+            <div v-else class="mt-4 space-y-2">
+              <div
+                v-for="rewardId in referralRewardIds"
+                :key="rewardId"
+                class="flex items-center justify-between gap-3 rounded-md bg-elevated px-3 py-2"
+              >
+                <span class="min-w-0 truncate font-mono text-sm text-highlighted" :title="rewardId">
+                  {{ rewardId }}
+                </span>
+                <UButton
+                  icon="i-lucide-gift"
+                  size="sm"
+                  color="primary"
+                  variant="soft"
+                  :loading="selectedReferralRewardId === rewardId"
+                  :disabled="Boolean(accountAction)"
+                  @click="onUseReferralReward(rewardId)"
+                >
+                  使用
+                </UButton>
+              </div>
+            </div>
+
+            <p v-if="actionAccount.last_referral_reward_applied_at" class="mt-3 text-xs text-muted">
+              上次使用：{{ formatDate(actionAccount.last_referral_reward_applied_at) }}
+            </p>
+          </div>
+
+          <div class="rounded-lg border border-default p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p class="font-medium text-highlighted">关闭自动续费</p>
+                <p class="mt-1 text-sm text-muted">订阅会在当前计费周期结束时停止，现有会员权益不会立即失效。</p>
+                <p v-if="actionAccount.subscription_ends_at" class="mt-2 text-xs text-muted">
+                  当前有效期至：{{ formatDate(actionAccount.subscription_ends_at) }}
+                </p>
+              </div>
+              <UBadge v-if="actionAccount.subscription_cancelled_at" color="neutral" variant="subtle">
+                已关闭续费
+              </UBadge>
+              <UButton
+                v-else-if="!confirmCancellation"
+                icon="i-lucide-calendar-x"
+                color="error"
+                variant="soft"
+                :disabled="Boolean(accountAction) || actionAccount.subscription_status !== 'active'"
+                @click="() => { confirmCancellation = true }"
+              >
+                关闭续费
+              </UButton>
+            </div>
+
+            <UAlert
+              v-if="confirmCancellation && !actionAccount.subscription_cancelled_at"
+              class="mt-4"
+              color="error"
+              variant="subtle"
+              title="确认关闭该账户的自动续费？"
+              description="该操作会提交到 OpenCode 的 Stripe 订阅门户。"
+            >
+              <template #actions>
+                <div class="flex gap-2">
+                  <UButton
+                    size="sm"
+                    color="neutral"
+                    variant="ghost"
+                    :disabled="Boolean(accountAction)"
+                    @click="() => { confirmCancellation = false }"
+                  >
+                    返回
+                  </UButton>
+                  <UButton
+                    size="sm"
+                    color="error"
+                    :loading="accountAction === 'cancel-renewal'"
+                    :disabled="Boolean(accountAction)"
+                    @click="onCancelRenewal"
+                  >
+                    确认关闭续费
+                  </UButton>
+                </div>
+              </template>
+            </UAlert>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end">
+          <UButton color="neutral" variant="ghost" :disabled="Boolean(accountAction)" @click="closeActionsModal">
+            关闭
+          </UButton>
         </div>
       </template>
     </UModal>

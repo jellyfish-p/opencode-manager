@@ -1,6 +1,89 @@
 import type { Account, AccountStatus } from './db'
+import { AccountOperationQueue } from './account-operation-queue'
+import { AccountPollSchedule } from './account-polling'
+import type { OpenCodeAccountInfo } from './opencode'
+import {
+  cacheAvailableReferralRewards,
+  consumeCachedReferralReward,
+  getCachedReferralRewards,
+  removeCachedReferralRewards,
+  selectCachedReferralReward,
+  retainCachedReferralRewardAccounts
+} from './referral-reward-cache'
 
 const accountRefreshes = new Map<number, Promise<Account>>()
+const accountOperations = new AccountOperationQueue()
+const accountPollSchedule = new AccountPollSchedule()
+let accountPollScheduleHydrated = false
+const REFRESH_CONCURRENCY = 4
+
+function ensureAccountPollSchedule(now = Date.now()) {
+  if (accountPollScheduleHydrated) return
+  accountPollSchedule.hydrate(listAccounts(), now)
+  accountPollScheduleHydrated = true
+}
+
+export function updateAccountPollSchedule(account: Account) {
+  ensureAccountPollSchedule()
+  accountPollSchedule.schedule(account)
+}
+
+export function removeAccountPollSchedule(id: number) {
+  ensureAccountPollSchedule()
+  accountPollSchedule.remove(id)
+  removeCachedReferralRewards(id)
+}
+
+export function rebuildAccountPollSchedule() {
+  const accounts = listAccounts()
+  accountPollSchedule.hydrate(accounts)
+  retainCachedReferralRewardAccounts(accounts.map(account => account.id))
+  accountPollScheduleHydrated = true
+}
+
+export function updateAccountSettings(
+  id: number,
+  body: {
+    name?: string
+    auth_cookie?: string
+    status?: AccountStatus
+  }
+) {
+  return accountOperations.run(id, async () => {
+    const account = getAccount(id)
+    if (!account) {
+      throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+    }
+
+    const updated = updateAccount(id, {
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.auth_cookie !== undefined ? { auth_cookie: body.auth_cookie.trim() } : {}),
+      ...(body.status !== undefined
+        ? body.status === 'disabled'
+          ? { status: body.status, disabled_reason: 'manual', auto_enable_at: null }
+          : { status: body.status, disabled_reason: null, auto_enable_at: null }
+        : {})
+    })!
+    if (body.auth_cookie !== undefined && body.auth_cookie.trim() !== account.auth_cookie) {
+      removeCachedReferralRewards(id)
+    }
+    updateAccountPollSchedule(updated)
+    return updated
+  })
+}
+
+async function mapConcurrent<T, R>(items: T[], limit: number, callback: (item: T) => Promise<R>) {
+  const results: R[] = []
+  let cursor = 0
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await callback(items[index]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
 
 function quotaFromInfo(info: Awaited<ReturnType<typeof fetchOpenCodeAccount>>, now: Date) {
   const rollingResetAt = resetAtFromSeconds(info.rollingResetSec, now)
@@ -17,18 +100,36 @@ function quotaFromInfo(info: Awaited<ReturnType<typeof fetchOpenCodeAccount>>, n
   return { rollingResetAt, weeklyResetAt, monthlyResetAt, quota }
 }
 
+interface RefreshAccountOptions {
+  skipReferralRewards?: boolean
+  throwOnError?: boolean
+}
+
+function cacheReferralRewards(accountId: number, info: OpenCodeAccountInfo) {
+  cacheAvailableReferralRewards(accountId, {
+    rewardIds: info.availableReferralRewardIds,
+    workspaceId: info.workspaceId,
+    applyServerId: info.referralApplyServerId
+  })
+}
+
 export function refreshAccount(id: number): Promise<Account> {
   const pending = accountRefreshes.get(id)
   if (pending) return pending
 
-  const refresh = refreshAccountOnce(id).finally(() => {
-    if (accountRefreshes.get(id) === refresh) accountRefreshes.delete(id)
-  })
+  const refresh = accountOperations.run(id, () => refreshAccountOnce(id, {}))
+    .then(account => {
+      updateAccountPollSchedule(account)
+      return account
+    })
+    .finally(() => {
+      if (accountRefreshes.get(id) === refresh) accountRefreshes.delete(id)
+    })
   accountRefreshes.set(id, refresh)
   return refresh
 }
 
-async function refreshAccountOnce(id: number): Promise<Account> {
+async function refreshAccountOnce(id: number, options: RefreshAccountOptions): Promise<Account> {
   const account = getAccount(id)
   if (!account) {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
@@ -36,10 +137,12 @@ async function refreshAccountOnce(id: number): Promise<Account> {
 
   try {
     let info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id)
+    cacheReferralRewards(id, info)
     let referralError: string | null = null
     const attemptedRewards = new Set<string>()
 
     while (
+      !options.skipReferralRewards &&
       account.disabled_reason !== 'manual' &&
       info.subscriptionStatus === 'active' &&
       attemptedRewards.size < 20
@@ -62,8 +165,10 @@ async function refreshAccountOnce(id: number): Promise<Account> {
           referralId,
           info.referralApplyServerId
         )
+        consumeCachedReferralReward(id, referralId)
       } catch (error) {
         const latest = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId)
+        cacheReferralRewards(id, latest)
         if (latest.availableReferralRewardIds.includes(referralId)) throw error
         // Another process applied the same reward after this refresh began.
         info = latest
@@ -75,6 +180,7 @@ async function refreshAccountOnce(id: number): Promise<Account> {
         last_referral_reward_applied_at: appliedAt
       })
       info = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId)
+      cacheReferralRewards(id, info)
     }
 
     const workspaceId = info.workspaceId || account.workspace_id
@@ -172,30 +278,137 @@ async function refreshAccountOnce(id: number): Promise<Account> {
     })!
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    return updateAccount(id, {
+    const failedAccount = updateAccount(id, {
       status: account.disabled_reason === 'manual' ? 'disabled' : 'error',
       last_error: message,
       last_synced_at: new Date().toISOString()
     })!
+    if (options.throwOnError) throw err
+    return failedAccount
   }
 }
 
 export async function refreshAllAccounts() {
   const accounts = listAccounts().filter(a => a.disabled_reason !== 'manual')
-  const results = []
-  for (const account of accounts) {
-    results.push(await refreshAccount(account.id))
-  }
-  return results
+  return mapConcurrent(accounts, REFRESH_CONCURRENCY, account => refreshAccount(account.id))
 }
 
 export async function refreshDueAccounts(now = new Date()) {
-  const timestamp = now.toISOString()
-  const due = listAccounts().filter(account =>
-    (account.next_quota_refresh_at && account.next_quota_refresh_at <= timestamp) ||
-    (account.auto_enable_at && account.auto_enable_at <= timestamp)
+  ensureAccountPollSchedule(now.getTime())
+  return refreshScheduledAccounts(accountPollSchedule.takeDue('quota', now.getTime()))
+}
+
+export async function refreshDueMembershipAccounts(now = new Date()) {
+  ensureAccountPollSchedule(now.getTime())
+  return refreshScheduledAccounts(accountPollSchedule.takeDue('membership', now.getTime()))
+}
+
+async function refreshScheduledAccounts(ids: number[]) {
+  const existingIds = ids.filter(id => {
+    const account = getAccount(id)
+    if (!account) {
+      accountPollSchedule.remove(id)
+      return false
+    }
+    if (account.disabled_reason === 'manual') {
+      accountPollSchedule.schedule(account)
+      return false
+    }
+    return true
+  })
+  return mapConcurrent(existingIds, REFRESH_CONCURRENCY, id => refreshAccount(id))
+}
+
+export function useAccountReferralReward(id: number, referralId: string) {
+  return accountOperations.run(id, () => useAccountReferralRewardOnce(id, referralId))
+}
+
+async function useAccountReferralRewardOnce(id: number, referralId: string) {
+  const account = getAccount(id)
+  if (!account) {
+    throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+  }
+
+  const cached = getCachedReferralRewards(id)
+  if (!cached) {
+    throw createError({ statusCode: 409, statusMessage: 'Referral reward cache is unavailable' })
+  }
+  const selected = selectCachedReferralReward(id, referralId)
+  if (!selected) {
+    throw createError({ statusCode: 409, statusMessage: 'Selected referral reward is no longer available' })
+  }
+  if (!selected.workspaceId || !selected.applyServerId) {
+    throw createError({ statusCode: 502, statusMessage: 'Referral reward action could not be resolved' })
+  }
+
+  await applyOpenCodeReferralReward(
+    account.auth_cookie,
+    selected.workspaceId,
+    selected.rewardId,
+    selected.applyServerId
   )
-  const results = []
-  for (const account of due) results.push(await refreshAccount(account.id))
-  return results
+  consumeCachedReferralReward(id, selected.rewardId)
+  updateAccount(id, {
+    last_referral_reward_id: selected.rewardId,
+    last_referral_reward_applied_at: new Date().toISOString(),
+    last_error: null
+  })
+
+  let refreshed = true
+  let refreshedAccount: Account
+  try {
+    refreshedAccount = await refreshAccountOnce(id, {
+      skipReferralRewards: true,
+      throwOnError: true
+    })
+  } catch {
+    refreshed = false
+    refreshedAccount = getAccount(id)!
+  }
+  updateAccountPollSchedule(refreshedAccount)
+  return {
+    account: refreshedAccount,
+    rewardId: selected.rewardId,
+    rewardIds: getCachedReferralRewards(id)?.rewardIds ?? [],
+    refreshed
+  }
+}
+
+export async function cancelAccountRenewal(id: number) {
+  const account = getAccount(id)
+  if (!account) {
+    throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+  }
+
+  const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id)
+  if (info.subscriptionStatus !== 'active') {
+    throw createError({ statusCode: 409, statusMessage: 'Account does not have an active subscription' })
+  }
+  if (!info.workspaceId || !info.liteSubscriptionId || !info.billingPortalServerId) {
+    throw createError({ statusCode: 502, statusMessage: 'Subscription cancellation action could not be resolved' })
+  }
+
+  const cancellation = await cancelOpenCodeSubscriptionRenewal(
+    account.auth_cookie,
+    info.workspaceId,
+    info.liteSubscriptionId,
+    info.billingPortalServerId
+  )
+  const checkedAt = new Date().toISOString()
+  updateAccount(id, {
+    cancelled_subscription_id: info.liteSubscriptionId,
+    subscription_cancelled_at:
+      cancellation.alreadyCancelled && account.subscription_cancelled_at
+        ? account.subscription_cancelled_at
+        : checkedAt,
+    subscription_cancel_checked_at: checkedAt,
+    subscription_ends_at: cancellation.currentPeriodEnd,
+    subscription_cancel_error: null
+  })
+
+  return {
+    account: await refreshAccount(id),
+    alreadyCancelled: cancellation.alreadyCancelled,
+    currentPeriodEnd: cancellation.currentPeriodEnd
+  }
 }

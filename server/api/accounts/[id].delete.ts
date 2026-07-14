@@ -5,5 +5,6 @@ export default defineEventHandler((event) => {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
   }
   deleteAccount(id)
+  removeAccountPollSchedule(id)
   return { ok: true }
 })

@@ -1,6 +1,6 @@
-import { Database } from 'bun:sqlite'
 import { resolve } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 
 export type AccountStatus = 'pending' | 'active' | 'error' | 'disabled'
 
@@ -56,7 +56,45 @@ export interface ManagedApiKey {
 
 type SQLiteValue = string | number | bigint | boolean | Uint8Array | null
 
-let db: Database | null = null
+interface SQLiteRunResult {
+  changes: number
+  lastInsertRowid: number | bigint
+}
+
+interface SQLiteStatement {
+  run(...params: any[]): SQLiteRunResult
+  get(...params: any[]): unknown
+  all(...params: any[]): unknown[]
+}
+
+interface SQLiteDatabase {
+  exec(sql: string): unknown
+  prepare(sql: string): SQLiteStatement
+}
+
+interface SQLiteDatabaseConstructor {
+  new(filename: string, options?: Record<string, unknown>): SQLiteDatabase
+}
+
+const runtimeRequire = createRequire(
+  process.argv[1] ? resolve(process.argv[1]) : resolve(process.cwd(), 'index.js')
+)
+let db: SQLiteDatabase | null = null
+let proxyCandidatesCache: Account[] | null = null
+let proxyPoolCursor = 0
+let managedApiKeyHashesCache: Set<string> | null = null
+
+function invalidateProxyCandidates() {
+  proxyCandidatesCache = null
+}
+
+function getDatabaseConstructor(): SQLiteDatabaseConstructor {
+  if (typeof Bun !== 'undefined') {
+    const bunSQLiteSpecifier = ['bun', 'sqlite'].join(':')
+    return (runtimeRequire(bunSQLiteSpecifier) as { Database: SQLiteDatabaseConstructor }).Database
+  }
+  return runtimeRequire('better-sqlite3') as SQLiteDatabaseConstructor
+}
 
 export function getDb() {
   if (db) return db
@@ -64,7 +102,11 @@ export function getDb() {
   const dataDir = resolve(process.cwd(), process.env.DATA_DIR || 'data')
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true })
 
-  db = new Database(resolve(dataDir, 'opencode.db'), { strict: true })
+  const Database = getDatabaseConstructor()
+  db = new Database(
+    resolve(dataDir, 'opencode.db'),
+    typeof Bun !== 'undefined' ? { strict: true } : undefined
+  )
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
 
@@ -137,7 +179,7 @@ export function toPublicAccount(row: Account): AccountPublic {
   return { ...rest, has_upstream_api_key: Boolean(upstream_api_key) }
 }
 
-function migrateAccountColumns(database: Database) {
+function migrateAccountColumns(database: SQLiteDatabase) {
   const existing = new Set(
     (database.prepare('PRAGMA table_info(accounts)').all() as Array<{ name: string }>).map(c => c.name)
   )
@@ -182,6 +224,7 @@ export function createAccount(input: { name?: string; auth_cookie: string }): Ac
       auth_cookie: input.auth_cookie.trim()
     })
 
+  invalidateProxyCandidates()
   return getAccount(Number(result.lastInsertRowid))!
 }
 
@@ -199,21 +242,27 @@ export function updateAccount(id: number, data: Partial<Account>) {
 
   fields.push(`updated_at = datetime('now')`)
   getDb().prepare(`UPDATE accounts SET ${fields.join(', ')} WHERE id = @id`).run(values)
+  invalidateProxyCandidates()
   return getAccount(id)
 }
 
 export function deleteAccount(id: number) {
-  return getDb().prepare('DELETE FROM accounts WHERE id = ?').run(id)
+  const result = getDb().prepare('DELETE FROM accounts WHERE id = ?').run(id)
+  invalidateProxyCandidates()
+  return result
 }
 
 export function deleteNonMemberAccounts() {
-  return getDb()
+  const result = getDb()
     .prepare(`DELETE FROM accounts WHERE subscription_status IS NULL OR subscription_status <> 'active'`)
     .run()
+  invalidateProxyCandidates()
+  return result
 }
 
 export function getProxyCandidates(): Account[] {
-  return getDb()
+  if (proxyCandidatesCache) return proxyCandidatesCache
+  proxyCandidatesCache = getDb()
     .prepare(`
       SELECT * FROM accounts
       WHERE status = 'active'
@@ -223,25 +272,15 @@ export function getProxyCandidates(): Account[] {
       ORDER BY id ASC
     `)
     .all() as Account[]
+  return proxyCandidatesCache
 }
 
-export function reserveProxyCandidates(): Account[] {
-  const database = getDb()
-  return database.transaction(() => {
-    const accounts = getProxyCandidates()
-    if (!accounts.length) return []
-    const row = database.prepare(`SELECT value FROM app_settings WHERE key = 'pool_cursor'`).get() as
-      | { value: string }
-      | undefined
-    const cursor = Number(row?.value || 0) % accounts.length
-    database
-      .prepare(`
-        INSERT INTO app_settings (key, value) VALUES ('pool_cursor', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `)
-      .run(String((cursor + 1) % accounts.length))
-    return [...accounts.slice(cursor), ...accounts.slice(0, cursor)]
-  })()
+export function reserveProxyCandidate(): Account | undefined {
+  const accounts = getProxyCandidates()
+  if (!accounts.length) return undefined
+  const cursor = proxyPoolCursor % accounts.length
+  proxyPoolCursor = (cursor + 1) % accounts.length
+  return accounts[cursor]
 }
 
 export function listManagedApiKeys(): ManagedApiKey[] {
@@ -256,11 +295,21 @@ export function createManagedApiKey(input: {
   const result = getDb()
     .prepare('INSERT INTO api_keys (name, key_hash, key_prefix) VALUES (?, ?, ?)')
     .run(input.name, input.key_hash, input.key_prefix)
+  managedApiKeyHashesCache = null
   return getDb().prepare('SELECT * FROM api_keys WHERE id = ?').get(result.lastInsertRowid) as ManagedApiKey
 }
 
 export function deleteManagedApiKey(id: number) {
-  return getDb().prepare('DELETE FROM api_keys WHERE id = ?').run(id)
+  const result = getDb().prepare('DELETE FROM api_keys WHERE id = ?').run(id)
+  managedApiKeyHashesCache = null
+  return result
+}
+
+export function getManagedApiKeyHashes(): Set<string> {
+  if (managedApiKeyHashesCache) return managedApiKeyHashesCache
+  const rows = getDb().prepare('SELECT key_hash FROM api_keys').all() as Array<{ key_hash: string }>
+  managedApiKeyHashesCache = new Set(rows.map(row => row.key_hash))
+  return managedApiKeyHashesCache
 }
 
 export function createSession(token: string, hours = 24 * 7) {

@@ -17,6 +17,8 @@ export interface Account {
   next_quota_refresh_at: string | null
   quota_refreshed_at: string | null
   referral_code: string | null
+  last_referral_reward_id: string | null
+  last_referral_reward_applied_at: string | null
   subscription_status: string | null
   subscription_cancelled_at: string | null
   subscription_cancel_checked_at: string | null
@@ -50,6 +52,12 @@ export interface Stats {
   rollingLimitAmount: number
   weeklyLimitAmount: number
   monthlyLimitAmount: number
+}
+
+export interface ReferralRewardList {
+  cached: boolean
+  rewardIds: string[]
+  refreshedAt: string | null
 }
 
 export function useAccounts() {
@@ -108,6 +116,36 @@ export function useAccounts() {
     return account
   }
 
+  async function fetchReferralRewards(id: number) {
+    return requestFetch<ReferralRewardList>(`/api/accounts/${id}/referral-rewards`)
+  }
+
+  async function useReferralReward(id: number, rewardId: string) {
+    const result = await requestFetch<{
+      account: Account
+      rewardId: string
+      rewardIds: string[]
+      refreshed: boolean
+    }>(
+      `/api/accounts/${id}/referral-reward`,
+      { method: 'POST', body: { rewardId } }
+    )
+    const index = accounts.value.findIndex(account => account.id === id)
+    if (index >= 0) accounts.value[index] = result.account
+    void Promise.allSettled([fetchAccounts(), fetchStats()])
+    return result
+  }
+
+  async function cancelRenewal(id: number) {
+    const result = await requestFetch<{
+      account: Account
+      alreadyCancelled: boolean
+      currentPeriodEnd: string | null
+    }>(`/api/accounts/${id}/cancel-renewal`, { method: 'POST' })
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return result
+  }
+
   async function refreshAll() {
     loading.value = true
     try {
@@ -129,6 +167,9 @@ export function useAccounts() {
     removeAccount,
     removeNonMembers,
     refreshAccount,
+    fetchReferralRewards,
+    useReferralReward,
+    cancelRenewal,
     refreshAll
   }
 }
