@@ -1,3 +1,5 @@
+import { validateAuthCookieValue } from './auth-cookie'
+
 export interface UsageBucket {
   status: string
   resetInSec: number
@@ -47,31 +49,7 @@ const UA =
 let routeModuleDiscovery: { signature: string; result: Promise<string[]> } | null = null
 
 export function buildAuthCookie(input: string): string {
-  const trimmed = input.trim()
-  if (!trimmed) {
-    throw new Error('auth cookie value is required')
-  }
-
-  let authValue = trimmed
-
-  if (trimmed.includes('=')) {
-    const authPart = trimmed
-      .split(';')
-      .map(part => part.trim())
-      .find(part => part.slice(0, part.indexOf('=')).trim().toLowerCase() === 'auth')
-
-    if (!authPart) {
-      throw new Error('auth cookie is missing')
-    }
-
-    authValue = authPart.slice(authPart.indexOf('=') + 1).trim()
-  }
-
-  if (!authValue) {
-    throw new Error('auth cookie value is required')
-  }
-
-  return `auth=${authValue}; oc_locale=${LOCALE}`
+  return `auth=${validateAuthCookieValue(input)}; oc_locale=${LOCALE}`
 }
 
 function commonHeaders(cookie: string): Record<string, string> {

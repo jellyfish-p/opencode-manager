@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { normalizeStoredAuthCookieValue, validateAuthCookieValue } from './auth-cookie'
 
 export type AccountStatus = 'pending' | 'active' | 'error' | 'disabled'
 
@@ -170,8 +171,21 @@ export function getDb() {
   `)
 
   migrateAccountColumns(db)
+  migrateStoredAuthCookieValues(db)
 
   return db
+}
+
+function migrateStoredAuthCookieValues(database: SQLiteDatabase) {
+  const accounts = database.prepare('SELECT id, auth_cookie FROM accounts').all() as Array<{
+    id: number
+    auth_cookie: string
+  }>
+  const update = database.prepare('UPDATE accounts SET auth_cookie = ? WHERE id = ?')
+  for (const account of accounts) {
+    const normalized = normalizeStoredAuthCookieValue(account.auth_cookie)
+    if (normalized !== account.auth_cookie) update.run(normalized, account.id)
+  }
 }
 
 export function toPublicAccount(row: Account): AccountPublic {
@@ -221,7 +235,7 @@ export function createAccount(input: { name?: string; auth_cookie: string }): Ac
     `)
     .run({
       name: input.name || null,
-      auth_cookie: input.auth_cookie.trim()
+      auth_cookie: validateAuthCookieValue(input.auth_cookie)
     })
 
   invalidateProxyCandidates()
@@ -235,7 +249,7 @@ export function updateAccount(id: number, data: Partial<Account>) {
   for (const [key, value] of Object.entries(data)) {
     if (key === 'id' || key === 'created_at') continue
     fields.push(`${key} = @${key}`)
-    values[key] = value
+    values[key] = key === 'auth_cookie' ? validateAuthCookieValue(value) : value
   }
 
   if (!fields.length) return getAccount(id)

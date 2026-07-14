@@ -1,14 +1,20 @@
 export default defineEventHandler(async (event) => {
   requireAuth(event)
 
-  const body = await readBody<{ name?: string; auth_cookie?: string; refresh?: boolean }>(event)
-  if (!body?.auth_cookie?.trim()) {
-    throw createError({ statusCode: 400, statusMessage: 'auth_cookie is required' })
+  const body = await readBody<{ name?: string; auth_cookie?: unknown; refresh?: boolean }>(event)
+  let authCookie: string
+  try {
+    authCookie = validateAuthCookieValue(body?.auth_cookie)
+  } catch (error) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: error instanceof Error ? error.message : 'Invalid auth cookie value'
+    })
   }
 
   const account = createAccount({
     name: body.name,
-    auth_cookie: body.auth_cookie
+    auth_cookie: authCookie
   })
 
   if (body.refresh !== false) {

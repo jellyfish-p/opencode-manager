@@ -1,6 +1,8 @@
 import type { Account, AccountStatus } from './db'
+import { resolveRefreshedAccountEmail } from './account-identity'
 import { AccountOperationQueue } from './account-operation-queue'
 import { AccountPollSchedule } from './account-polling'
+import { validateAuthCookieValue } from './auth-cookie'
 import type { OpenCodeAccountInfo } from './opencode'
 import {
   cacheAvailableReferralRewards,
@@ -54,17 +56,30 @@ export function updateAccountSettings(
     if (!account) {
       throw createError({ statusCode: 404, statusMessage: 'Account not found' })
     }
+    const nextAuthCookie = body.auth_cookie === undefined
+      ? undefined
+      : validateAuthCookieValue(body.auth_cookie)
+    const credentialChanged = nextAuthCookie !== undefined && nextAuthCookie !== account.auth_cookie
 
     const updated = updateAccount(id, {
       ...(body.name !== undefined ? { name: body.name } : {}),
-      ...(body.auth_cookie !== undefined ? { auth_cookie: body.auth_cookie.trim() } : {}),
+      ...(nextAuthCookie !== undefined ? { auth_cookie: nextAuthCookie } : {}),
+      ...(credentialChanged
+        ? {
+            email: null,
+            workspace_id: null,
+            workspace_name: null,
+            upstream_api_key: null,
+            referral_code: null
+          }
+        : {}),
       ...(body.status !== undefined
         ? body.status === 'disabled'
           ? { status: body.status, disabled_reason: 'manual', auto_enable_at: null }
           : { status: body.status, disabled_reason: null, auto_enable_at: null }
         : {})
     })!
-    if (body.auth_cookie !== undefined && body.auth_cookie.trim() !== account.auth_cookie) {
+    if (credentialChanged) {
       removeCachedReferralRewards(id)
     }
     updateAccountPollSchedule(updated)
@@ -251,7 +266,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
           ? `quota:${quota.exhausted.join(',')}`
           : null
     return updateAccount(id, {
-      email: info.email,
+      email: resolveRefreshedAccountEmail(info.email, account.email),
       workspace_id: info.workspaceId,
       workspace_name: info.workspaceName,
       balance: info.balance,
@@ -291,6 +306,10 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
 export async function refreshAllAccounts() {
   const accounts = listAccounts().filter(a => a.disabled_reason !== 'manual')
   return mapConcurrent(accounts, REFRESH_CONCURRENCY, account => refreshAccount(account.id))
+}
+
+export function refreshAccountsByIds(ids: number[]) {
+  return mapConcurrent(ids, REFRESH_CONCURRENCY, refreshAccount)
 }
 
 export async function refreshDueAccounts(now = new Date()) {

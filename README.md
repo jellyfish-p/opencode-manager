@@ -50,8 +50,11 @@ bun run dev
 ## 添加账号
 
 1. 浏览器登录 https://opencode.ai
-2. DevTools → Network → 任意请求 → 复制 `Cookie`
-3. 后台「号池」→ 添加账号 → 粘贴 Cookie
+2. DevTools → Application → Cookies → 找到 `auth`
+3. 只复制 `auth={value}` 中的 `value` 部分，不要复制 `auth=`
+4. 后台「号池」→ 添加账号 → 每行粘贴一个 value，可批量添加
+
+输入仅接受纯 auth Cookie value，不会从完整 Cookie、`auth=` 前缀或其他键值中兼容提取。旧数据库中的完整 Cookie 会在启动时一次性迁移为纯 value。
 
 系统流程：
 
@@ -72,7 +75,8 @@ bun run dev
 | POST | `/api/auth/logout` | 退出 |
 | GET | `/api/auth/me` | 会话检查 |
 | GET | `/api/accounts` | 列表 |
-| POST | `/api/accounts` | `{ name?, auth_cookie }` |
+| POST | `/api/accounts` | 单个账号：`{ name?, auth_cookie }`，`auth_cookie` 仅接受纯 value |
+| POST | `/api/accounts/batch` | 批量账号：`{ name?, auth_cookie_values }`，按行分隔纯 value |
 | PATCH | `/api/accounts/:id` | 更新 |
 | DELETE | `/api/accounts/:id` | 删除 |
 | POST | `/api/accounts/:id/refresh` | 刷新单号 |

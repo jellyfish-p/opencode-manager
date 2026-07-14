@@ -79,13 +79,23 @@ export function useAccounts() {
     stats.value = await requestFetch<Stats>('/api/stats')
   }
 
-  async function addAccount(payload: { name?: string; auth_cookie: string }) {
-    const account = await requestFetch<Account>('/api/accounts', {
+  async function addAccounts(payload: { name?: string; auth_cookie_values: string }) {
+    const result = await requestFetch<{
+      created: number
+      synchronized: number
+      failed: number
+      accounts: Account[]
+    }>('/api/accounts/batch', {
       method: 'POST',
       body: payload
     })
-    await Promise.all([fetchAccounts(), fetchStats()])
-    return account
+    const createdIds = new Set(result.accounts.map(account => account.id))
+    accounts.value = [
+      ...result.accounts,
+      ...accounts.value.filter(account => !createdIds.has(account.id))
+    ].sort((a, b) => b.id - a.id)
+    void Promise.allSettled([fetchAccounts(), fetchStats()])
+    return result
   }
 
   async function updateAccount(id: number, payload: Partial<{ name: string; auth_cookie: string; status: Account['status'] }>) {
@@ -162,7 +172,7 @@ export function useAccounts() {
     loading,
     fetchAccounts,
     fetchStats,
-    addAccount,
+    addAccounts,
     updateAccount,
     removeAccount,
     removeNonMembers,

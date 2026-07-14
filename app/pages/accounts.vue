@@ -6,7 +6,7 @@ const {
   loading,
   fetchAccounts,
   fetchStats,
-  addAccount,
+  addAccounts,
   updateAccount,
   removeAccount,
   removeNonMembers,
@@ -159,16 +159,22 @@ function setMembershipFilter(value: 'all' | 'member' | 'non-member') {
 
 async function onAdd() {
   if (!formCookie.value.trim()) {
-    toast.add({ title: '请填写 auth cookie', color: 'error' })
+    toast.add({ title: '请填写至少一个 auth Cookie value', color: 'error' })
     return
   }
   submitting.value = true
   try {
-    await addAccount({
+    const result = await addAccounts({
       name: formName.value || undefined,
-      auth_cookie: formCookie.value
+      auth_cookie_values: formCookie.value
     })
-    toast.add({ title: '账号已添加并同步', color: 'success' })
+    toast.add({
+      title: result.failed
+        ? `已添加 ${result.created} 个账号，${result.failed} 个同步失败`
+        : `已添加并同步 ${result.synchronized} 个账号`,
+      description: result.failed ? '失败账号已保留，可稍后单独刷新' : undefined,
+      color: result.failed ? 'warning' : 'success'
+    })
     openAdd.value = false
     resetForm()
   } catch (e: any) {
@@ -290,7 +296,7 @@ async function copyReferralLink(code: string) {
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h1 class="text-2xl font-semibold text-highlighted">号池管理</h1>
-        <p class="text-sm text-muted">粘贴 OpenCode 登录 Cookie，自动解析 workspace / 用量</p>
+        <p class="text-sm text-muted">粘贴 auth Cookie 的纯 value，每行一个，自动解析 workspace / 用量</p>
       </div>
       <div class="flex gap-2">
         <UButton
@@ -349,7 +355,7 @@ async function copyReferralLink(code: string) {
                   {{ account.name || account.email || `#${account.id}` }}
                 </div>
                 <div class="text-xs text-muted">
-                  {{ account.email || '未同步' }}
+                  {{ account.email || '邮箱未知' }}
                 </div>
                 <div v-if="account.workspace_id" class="text-xs text-muted">
                   {{ account.workspace_id }}
@@ -467,28 +473,28 @@ async function copyReferralLink(code: string) {
       <template #body>
         <div class="space-y-4">
           <UFormField label="备注名称" name="name">
-            <UInput v-model="formName" placeholder="可选，如 账号A" class="w-full" />
+            <UInput v-model="formName" placeholder="可选；批量添加时自动追加序号" class="w-full" />
           </UFormField>
-          <UFormField label="Auth Cookie" name="cookie" required>
+          <UFormField label="Auth Cookie Values" name="cookie" required>
             <UTextarea
               v-model="formCookie"
-              :rows="6"
-              placeholder="粘贴浏览器 Cookie，例如 session=...; other=..."
+              :rows="8"
+              placeholder="每行一个纯 value，不要包含 auth= 或其他 Cookie"
               class="w-full font-mono text-xs"
             />
           </UFormField>
           <UAlert
             color="info"
             variant="subtle"
-            title="获取方式"
-            description="登录 opencode.ai 后，在开发者工具 Network 中复制请求 Cookie。系统会请求 /auth 拿 workspace，再解析 /go 页面 SSR 数据。"
+            title="仅接收 auth 的 value"
+            description="从 auth={value} 中只复制 value 部分；可按回车分隔批量添加。完整 Cookie、auth= 前缀和其他键值不会被兼容提取。"
           />
         </div>
       </template>
       <template #footer>
         <div class="flex justify-end gap-2">
           <UButton color="neutral" variant="ghost" @click="closeAddModal">取消</UButton>
-          <UButton color="primary" :loading="submitting" @click="onAdd">添加并同步</UButton>
+          <UButton color="primary" :loading="submitting" @click="onAdd">批量添加并同步</UButton>
         </div>
       </template>
     </UModal>
@@ -499,11 +505,11 @@ async function copyReferralLink(code: string) {
           <UFormField label="备注名称" name="name">
             <UInput v-model="formName" placeholder="可选" class="w-full" />
           </UFormField>
-          <UFormField label="更新 Auth Cookie" name="cookie">
+          <UFormField label="更新 Auth Cookie Value" name="cookie">
             <UTextarea
               v-model="formCookie"
               :rows="5"
-              placeholder="留空则不修改 Cookie"
+              placeholder="仅填写 auth={value} 中的 value；留空则不修改"
               class="w-full font-mono text-xs"
             />
           </UFormField>

@@ -53,7 +53,7 @@ describe('OpenCode referral rewards', () => {
     }) as typeof fetch
 
     await applyOpenCodeReferralReward(
-      'auth=test-cookie',
+      'test-cookie',
       'wrk_TEST',
       'ref_TEST',
       'a'.repeat(64),
@@ -64,6 +64,7 @@ describe('OpenCode referral rewards', () => {
     expect(requests[0]!.input).toBe('https://opencode.ai/_server')
     expect(requests[0]!.init?.method).toBe('POST')
     const headers = new Headers(requests[0]!.init?.headers)
+    expect(headers.get('cookie')).toBe('auth=test-cookie; oc_locale=zh')
     expect(headers.get('x-server-id')).toBe('a'.repeat(64))
     expect(headers.get('x-server-instance')).toBe('server-fn:0')
     expect(JSON.parse(String(requests[0]!.init?.body))).toEqual(
@@ -103,7 +104,7 @@ describe('OpenCode referral rewards', () => {
     }) as typeof fetch
 
     const result = await cancelOpenCodeSubscriptionRenewal(
-      'auth=test-cookie',
+      'test-cookie',
       'wrk_TEST',
       'sub_LITE',
       'c'.repeat(64),
