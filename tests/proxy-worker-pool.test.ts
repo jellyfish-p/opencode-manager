@@ -54,6 +54,79 @@ describe('proxy worker pool', () => {
     expect(await second.text()).toBe('second')
   })
 
+  test('removes queued work when its requester disconnects', async () => {
+    const pool = new ProxyWorkerPool(1, 2)
+    const first = await pool.run(async () => new Response(new ReadableStream()))
+    const abortController = new AbortController()
+    let queuedStarted = false
+    let queuedOutcome = 'pending'
+    const queued = pool.run(async () => {
+      queuedStarted = true
+      return new Response('queued')
+    }, { signal: abortController.signal }).then(
+      () => { queuedOutcome = 'resolved' },
+      () => { queuedOutcome = 'rejected' }
+    )
+
+    await Promise.resolve()
+    expect(pool.waiting).toBe(1)
+    abortController.abort()
+    const settledAfterAbort = await Promise.race([
+      queued.then(() => true),
+      Bun.sleep(10).then(() => false)
+    ])
+    const waitingAfterAbort = pool.waiting
+    const outcomeAfterAbort = queuedOutcome
+
+    await first.body!.cancel()
+    await queued
+    expect(waitingAfterAbort).toBe(0)
+    expect(settledAfterAbort).toBe(true)
+    expect(outcomeAfterAbort).toBe('rejected')
+    expect(queuedStarted).toBe(false)
+  })
+
+  test('releases an active streaming worker when its requester disconnects', async () => {
+    const pool = new ProxyWorkerPool(1, 1)
+    const abortController = new AbortController()
+    const response = await pool.run(
+      async () => new Response(new ReadableStream()),
+      { signal: abortController.signal }
+    )
+
+    expect(pool.active).toBe(1)
+    abortController.abort()
+    await Promise.resolve()
+    const activeAfterAbort = pool.active
+
+    await response.body!.cancel()
+    expect(activeAfterAbort).toBe(0)
+  })
+
+  test('expires queued work instead of allowing unbounded queue latency', async () => {
+    const pool = new ProxyWorkerPool(1, 1)
+    const first = await pool.run(async () => new Response(new ReadableStream()))
+    let queuedStarted = false
+    let queuedOutcome = 'pending'
+    const queued = pool.run(async () => {
+      queuedStarted = true
+      return new Response('queued')
+    }, { queueTimeoutMs: 10 }).then(
+      () => { queuedOutcome = 'resolved' },
+      () => { queuedOutcome = 'rejected' }
+    )
+
+    await Bun.sleep(25)
+    const waitingAfterTimeout = pool.waiting
+    const outcomeAfterTimeout = queuedOutcome
+
+    await first.body!.cancel()
+    await queued
+    expect(waitingAfterTimeout).toBe(0)
+    expect(outcomeAfterTimeout).toBe('rejected')
+    expect(queuedStarted).toBe(false)
+  })
+
   test('scales by demand but contracts at CPU and event-loop limits', () => {
     const base = {
       workerCount: 64,

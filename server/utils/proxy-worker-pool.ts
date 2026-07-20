@@ -3,34 +3,32 @@ interface Waiter {
   reject: (error: Error) => void
 }
 
-class RingQueue<T> {
-  private items: Array<T | undefined>
-  private head = 0
-  private tail = 0
-  private count = 0
+class BoundedFifoQueue<T> {
+  private items = new Map<number, T>()
+  private nextKey = 0
 
-  constructor(readonly capacity: number) {
-    this.items = new Array(capacity)
-  }
+  constructor(readonly capacity: number) {}
 
   get size() {
-    return this.count
+    return this.items.size
   }
 
   push(item: T) {
-    if (this.count >= this.capacity) return false
-    this.items[this.tail] = item
-    this.tail = (this.tail + 1) % this.capacity
-    this.count++
-    return true
+    if (this.items.size >= this.capacity) return null
+    const key = this.nextKey++
+    this.items.set(key, item)
+    return key
+  }
+
+  delete(key: number) {
+    return this.items.delete(key)
   }
 
   shift(): T | undefined {
-    if (!this.count) return undefined
-    const item = this.items[this.head]
-    this.items[this.head] = undefined
-    this.head = (this.head + 1) % this.capacity
-    this.count--
+    const entry = this.items.entries().next().value as [number, T] | undefined
+    if (!entry) return undefined
+    const [key, item] = entry
+    this.items.delete(key)
     return item
   }
 }
@@ -42,9 +40,28 @@ export class ProxyPoolSaturatedError extends Error {
   }
 }
 
+export class ProxyRequestAbortedError extends Error {
+  constructor() {
+    super('Proxy request was aborted')
+    this.name = 'ProxyRequestAbortedError'
+  }
+}
+
+export class ProxyQueueTimeoutError extends Error {
+  constructor() {
+    super('Proxy worker queue wait timed out')
+    this.name = 'ProxyQueueTimeoutError'
+  }
+}
+
+export interface ProxyWorkerRunOptions {
+  signal?: AbortSignal
+  queueTimeoutMs?: number
+}
+
 export class ProxyWorkerPool {
   private idleWorkers: number[]
-  private waiters: RingQueue<Waiter>
+  private waiters: BoundedFifoQueue<Waiter>
   private totalWorkers: number
   private targetWorkers: number
   private nextWorkerId: number
@@ -53,7 +70,7 @@ export class ProxyWorkerPool {
     if (!Number.isInteger(workerCount) || workerCount < 1) throw new Error('workerCount must be positive')
     if (!Number.isInteger(queueLimit) || queueLimit < 1) throw new Error('queueLimit must be positive')
     this.idleWorkers = Array.from({ length: workerCount }, (_, index) => workerCount - index - 1)
-    this.waiters = new RingQueue(queueLimit)
+    this.waiters = new BoundedFifoQueue(queueLimit)
     this.totalWorkers = workerCount
     this.targetWorkers = workerCount
     this.nextWorkerId = workerCount
@@ -86,22 +103,81 @@ export class ProxyWorkerPool {
     }
   }
 
-  async run(task: (workerId: number) => Promise<Response>): Promise<Response> {
-    const workerId = await this.acquire()
+  async run(
+    task: (workerId: number) => Promise<Response>,
+    options: ProxyWorkerRunOptions = {}
+  ): Promise<Response> {
+    const workerId = await this.acquire(options)
+    if (options.signal?.aborted) {
+      this.release(workerId)
+      throw new ProxyRequestAbortedError()
+    }
     try {
       const response = await task(workerId)
-      return this.holdWorkerForStream(workerId, response)
+      return this.holdWorkerForStream(workerId, response, options.signal)
     } catch (error) {
       this.release(workerId)
       throw error
     }
   }
 
-  private acquire(): Promise<number> {
+  private acquire(options: ProxyWorkerRunOptions): Promise<number> {
+    if (options.signal?.aborted) return Promise.reject(new ProxyRequestAbortedError())
     const workerId = this.idleWorkers.pop()
     if (workerId !== undefined) return Promise.resolve(workerId)
+
     return new Promise((resolve, reject) => {
-      if (!this.waiters.push({ resolve, reject })) reject(new ProxyPoolSaturatedError())
+      let settled = false
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      let abortListener: (() => void) | undefined
+      let queueKey: number | null = null
+
+      const cleanup = () => {
+        if (timeout) clearTimeout(timeout)
+        if (abortListener && options.signal) {
+          options.signal.removeEventListener('abort', abortListener)
+        }
+      }
+      const waiter: Waiter = {
+        resolve: nextWorkerId => {
+          if (settled) return
+          settled = true
+          cleanup()
+          resolve(nextWorkerId)
+        },
+        reject: error => {
+          if (settled) return
+          settled = true
+          cleanup()
+          reject(error)
+        }
+      }
+      queueKey = this.waiters.push(waiter)
+      if (queueKey === null) {
+        waiter.reject(new ProxyPoolSaturatedError())
+        return
+      }
+
+      const removeAndReject = (error: Error) => {
+        if (settled) return
+        if (queueKey !== null) this.waiters.delete(queueKey)
+        waiter.reject(error)
+      }
+      if (options.signal) {
+        abortListener = () => removeAndReject(new ProxyRequestAbortedError())
+        options.signal.addEventListener('abort', abortListener, { once: true })
+        if (options.signal.aborted) {
+          abortListener()
+          return
+        }
+      }
+      if (options.queueTimeoutMs && options.queueTimeoutMs > 0) {
+        timeout = setTimeout(
+          () => removeAndReject(new ProxyQueueTimeoutError()),
+          options.queueTimeoutMs
+        )
+        timeout.unref?.()
+      }
     })
   }
 
@@ -115,7 +191,7 @@ export class ProxyWorkerPool {
     else this.idleWorkers.push(workerId)
   }
 
-  private holdWorkerForStream(workerId: number, response: Response) {
+  private holdWorkerForStream(workerId: number, response: Response, signal?: AbortSignal) {
     if (!response.body) {
       this.release(workerId)
       return response
@@ -123,10 +199,20 @@ export class ProxyWorkerPool {
 
     const reader = response.body.getReader()
     let released = false
+    let abortListener: (() => void) | undefined
     const release = () => {
       if (released) return
       released = true
+      if (abortListener && signal) signal.removeEventListener('abort', abortListener)
       this.release(workerId)
+    }
+    abortListener = () => {
+      release()
+      void reader.cancel(signal?.reason).catch(() => {})
+    }
+    if (signal) {
+      signal.addEventListener('abort', abortListener, { once: true })
+      if (signal.aborted) abortListener()
     }
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
