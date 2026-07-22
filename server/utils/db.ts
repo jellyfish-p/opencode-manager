@@ -38,6 +38,8 @@ export interface Account {
   status: AccountStatus
   disabled_reason: string | null
   auto_enable_at: string | null
+  risk_control_checked_at: string | null
+  risk_control_detected_at: string | null
   last_error: string | null
   last_synced_at: string | null
   created_at: string
@@ -158,6 +160,8 @@ export function getDb() {
       status TEXT NOT NULL DEFAULT 'pending',
       disabled_reason TEXT,
       auto_enable_at TEXT,
+      risk_control_checked_at TEXT,
+      risk_control_detected_at TEXT,
       last_error TEXT,
       last_synced_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -241,7 +245,9 @@ function migrateAccountColumns(database: SQLiteDatabase) {
     upstream_api_key: 'TEXT',
     ip_pool_id: 'INTEGER',
     disabled_reason: 'TEXT',
-    auto_enable_at: 'TEXT'
+    auto_enable_at: 'TEXT',
+    risk_control_checked_at: 'TEXT',
+    risk_control_detected_at: 'TEXT'
   }
   for (const [name, type] of Object.entries(columns)) {
     if (!existing.has(name)) database.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${type}`)

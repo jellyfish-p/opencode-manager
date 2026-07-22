@@ -81,7 +81,10 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
           body,
           signal: upstreamSignal
         })
-        if (ACCOUNT_ERROR_STATUSES.has(response.status) || response.status >= 500) {
+        const riskControl = await inspectRiskControlResponse(response)
+        if (riskControl.blocked) {
+          markAccountRiskControlled(account.id, riskControl.message)
+        } else if (ACCOUNT_ERROR_STATUSES.has(response.status) || response.status >= 500) {
           refreshAfterUpstreamError(account.id)
         }
         return response

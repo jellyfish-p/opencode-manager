@@ -15,7 +15,9 @@ const {
   fetchReferralRewards,
   useReferralReward,
   cancelRenewal,
-  refreshAll
+  refreshAll,
+  checkRiskControl,
+  checkAllRiskControls
 } = useAccounts()
 
 const toast = useToast()
@@ -40,6 +42,7 @@ const selectedReferralRewardId = ref<string | null>(null)
 const confirmCancellation = ref(false)
 const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
+const checkingAllRiskControls = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
 
 const filteredAccounts = computed(() => {
@@ -304,6 +307,43 @@ async function onRefreshAll() {
   }
 }
 
+async function onCheckRiskControl(account: Account) {
+  actionId.value = account.id
+  try {
+    const result = await checkRiskControl(account.id)
+    toast.add({
+      title: result.blocked
+        ? '检测到账号风控，已自动禁用'
+        : result.upstreamStatus >= 200 && result.upstreamStatus < 300
+          ? '风控检测通过'
+          : `未检测到风控，上游返回 ${result.upstreamStatus}`,
+      description: result.message || undefined,
+      color: result.blocked ? 'error' : result.upstreamStatus < 300 ? 'success' : 'warning'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '风控检测失败', color: 'error' })
+  } finally {
+    actionId.value = null
+  }
+}
+
+async function onCheckAllRiskControls() {
+  checkingAllRiskControls.value = true
+  try {
+    const results = await checkAllRiskControls()
+    const blocked = results.filter(result => result.blocked).length
+    toast.add({
+      title: blocked ? `检测完成，自动禁用 ${blocked} 个风控账号` : '风控检测完成，未发现风控账号',
+      description: `共检测 ${results.length} 个可用或待复检账号`,
+      color: blocked ? 'warning' : 'success'
+    })
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '批量风控检测失败', color: 'error' })
+  } finally {
+    checkingAllRiskControls.value = false
+  }
+}
+
 async function onDeleteNonMembers() {
   if (!nonMemberCount.value || !confirm(`确认删除 ${nonMemberCount.value} 个非会员账号？`)) return
   try {
@@ -346,6 +386,15 @@ async function copyReferralLink(code: string) {
         <p class="text-sm text-muted">粘贴 auth Cookie 的纯 value，每行一个，自动解析 workspace / 用量</p>
       </div>
       <div class="flex gap-2">
+        <UButton
+          icon="i-lucide-shield-check"
+          color="neutral"
+          variant="outline"
+          :loading="checkingAllRiskControls"
+          @click="onCheckAllRiskControls"
+        >
+          风控检测
+        </UButton>
         <UButton
           icon="i-lucide-refresh-cw"
           color="neutral"
@@ -434,6 +483,13 @@ async function copyReferralLink(code: string) {
                   {{ account.status }}
                 </UBadge>
                 <div v-if="account.disabled_reason" class="mt-1 text-xs text-muted">{{ account.disabled_reason }}</div>
+                <div v-if="account.risk_control_detected_at" class="mt-1 text-xs text-error">
+                  {{ account.disabled_reason === 'risk_control' ? '风控命中' : '最近风控' }}
+                  {{ formatDate(account.risk_control_detected_at) }}
+                </div>
+                <div v-if="account.risk_control_checked_at" class="mt-1 text-xs text-muted">
+                  检测 {{ formatDate(account.risk_control_checked_at) }}
+                </div>
                 <div v-if="account.auto_enable_at" class="mt-1 text-xs text-muted">恢复 {{ formatDate(account.auto_enable_at) }}</div>
               </td>
               <td class="px-4 py-3">
@@ -482,6 +538,15 @@ async function copyReferralLink(code: string) {
                     variant="ghost"
                     title="账户操作"
                     @click="openActionsModal(account)"
+                  />
+                  <UButton
+                    icon="i-lucide-shield-check"
+                    size="xs"
+                    :color="account.disabled_reason === 'risk_control' ? 'error' : 'neutral'"
+                    variant="ghost"
+                    title="风控检测"
+                    :loading="actionId === account.id"
+                    @click="onCheckRiskControl(account)"
                   />
                   <UButton
                     icon="i-lucide-refresh-cw"

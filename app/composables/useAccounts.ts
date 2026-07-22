@@ -29,6 +29,8 @@ export interface Account {
   status: 'pending' | 'active' | 'error' | 'disabled'
   disabled_reason: string | null
   auto_enable_at: string | null
+  risk_control_checked_at: string | null
+  risk_control_detected_at: string | null
   last_error: string | null
   last_synced_at: string | null
   created_at: string
@@ -59,6 +61,14 @@ export interface ReferralRewardList {
   cached: boolean
   rewardIds: string[]
   refreshedAt: string | null
+}
+
+export interface RiskControlCheckResult {
+  account: Account
+  blocked: boolean
+  upstreamStatus: number
+  errorType: string | null
+  message: string | null
 }
 
 export function useAccounts() {
@@ -171,6 +181,24 @@ export function useAccounts() {
     }
   }
 
+  async function checkRiskControl(id: number) {
+    const result = await requestFetch<RiskControlCheckResult>(
+      `/api/accounts/${id}/risk-control-check`,
+      { method: 'POST' }
+    )
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return result
+  }
+
+  async function checkAllRiskControls() {
+    const results = await requestFetch<RiskControlCheckResult[]>(
+      '/api/accounts/risk-control/check-all',
+      { method: 'POST' }
+    )
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return results
+  }
+
   return {
     accounts,
     stats,
@@ -186,6 +214,8 @@ export function useAccounts() {
     fetchReferralRewards,
     useReferralReward,
     cancelRenewal,
-    refreshAll
+    refreshAll,
+    checkRiskControl,
+    checkAllRiskControls
   }
 }

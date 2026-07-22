@@ -11,6 +11,7 @@ Nuxt UI 全栈号池管理：SQLite 存储账号，通过浏览器 Cookie 自动
 - 单号刷新 / 全部刷新
 - OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
 - 使用内存轮询号池，单次请求只访问一个上游账户，不执行失败重试
+- 自动识别上游风控 AuthError、禁用命中账号，并支持单号或全量风控复检
 - 额度耗尽时自动使用可用推广收益扩充额度
 - 会员账号自动关闭续费，并保留权益至当前订阅周期结束
 - 额度耗尽自动禁用并在窗口释放后恢复，会员过期自动禁用
@@ -35,6 +36,8 @@ api_keys:
 PROXY_MIN_WORKERS=64
 PROXY_MAX_WORKERS=1024
 PROXY_QUEUE_LIMIT=8192
+# 风控检测使用的最小探测模型（默认 glm-5.2）
+RISK_CONTROL_CHECK_MODEL=glm-5.2
 ```
 
 旧的 `PROXY_WORKERS` 仍可作为最小工作槽数量使用。扩容采用渐进方式，不会一次性创建上千个并发流；CPU 达到 85% 或事件循环延迟达到 200ms 时停止扩容并收缩 25%，空闲 30 秒后也会逐步回落。
@@ -89,6 +92,8 @@ bun run dev
 | DELETE | `/api/accounts/:id` | 删除 |
 | POST | `/api/accounts/:id/refresh` | 刷新单号 |
 | POST | `/api/accounts/refresh-all` | 刷新全部 |
+| POST | `/api/accounts/:id/risk-control-check` | 单号风控检测，命中后自动禁用 |
+| POST | `/api/accounts/risk-control/check-all` | 检测全部可用或待复检的风控账号 |
 | GET | `/api/stats` | 统计 |
 | GET | `/api/api-keys` | 对外 API 密钥列表（仅显示掩码） |
 | POST | `/api/api-keys` | 创建对外 API 密钥 |

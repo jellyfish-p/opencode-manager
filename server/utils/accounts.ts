@@ -7,6 +7,11 @@ import type { OpenCodeAccountInfo } from './opencode'
 import { createAccountFetch } from './account-fetch'
 import { ensureAccountIpAssignment } from './ip-pool'
 import {
+  inspectRiskControlResponse,
+  isProtectedAccountDisabledReason,
+  RISK_CONTROL_DISABLED_REASON
+} from './account-risk-control'
+import {
   cacheAvailableReferralRewards,
   consumeCachedReferralReward,
   getCachedReferralRewards,
@@ -20,6 +25,7 @@ const accountOperations = new AccountOperationQueue()
 const accountPollSchedule = new AccountPollSchedule()
 let accountPollScheduleHydrated = false
 const REFRESH_CONCURRENCY = 4
+const RISK_CONTROL_CHECK_MODEL = process.env.RISK_CONTROL_CHECK_MODEL || 'glm-5.2'
 
 function ensureAccountPollSchedule(now = Date.now()) {
   if (accountPollScheduleHydrated) return
@@ -72,7 +78,17 @@ export function updateAccountSettings(
             workspace_id: null,
             workspace_name: null,
             upstream_api_key: null,
-            referral_code: null
+            referral_code: null,
+            risk_control_checked_at: null,
+            risk_control_detected_at: null,
+            ...(account.disabled_reason === RISK_CONTROL_DISABLED_REASON
+              ? {
+                  status: 'pending' as AccountStatus,
+                  disabled_reason: null,
+                  auto_enable_at: null,
+                  last_error: null
+                }
+              : {})
           }
         : {}),
       ...(body.status !== undefined
@@ -161,7 +177,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
 
     while (
       !options.skipReferralRewards &&
-      account.disabled_reason !== 'manual' &&
+      !isProtectedAccountDisabledReason(account.disabled_reason) &&
       info.subscriptionStatus === 'active' &&
       attemptedRewards.size < 20
     ) {
@@ -257,14 +273,18 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     const now = new Date()
     const { rollingResetAt, weeklyResetAt, monthlyResetAt, quota } = quotaFromInfo(info, now)
     const isMember = info.subscriptionStatus === 'active'
-    const isManuallyDisabled = account.status === 'disabled' && account.disabled_reason === 'manual'
-    const status: AccountStatus = isManuallyDisabled
+    const currentAccount = getAccount(id) || account
+    const protectedDisabledReason = currentAccount.status === 'disabled' &&
+      isProtectedAccountDisabledReason(currentAccount.disabled_reason)
+      ? currentAccount.disabled_reason
+      : null
+    const status: AccountStatus = protectedDisabledReason
       ? 'disabled'
       : !isMember || quota.exhausted.length
         ? 'disabled'
         : 'active'
-    const disabledReason = isManuallyDisabled
-      ? 'manual'
+    const disabledReason = protectedDisabledReason
+      ? protectedDisabledReason
       : !isMember
         ? 'expired'
         : quota.exhausted.length
@@ -293,14 +313,21 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       status,
       disabled_reason: disabledReason,
       auto_enable_at: disabledReason?.startsWith('quota:') ? quota.autoEnableAt : null,
-      last_error: referralError,
+      last_error: protectedDisabledReason === RISK_CONTROL_DISABLED_REASON
+        ? currentAccount.last_error
+        : referralError,
       last_synced_at: now.toISOString()
     })!
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    const currentAccount = getAccount(id) || account
+    const preserveDisabled = currentAccount.status === 'disabled' &&
+      isProtectedAccountDisabledReason(currentAccount.disabled_reason)
     const failedAccount = updateAccount(id, {
-      status: account.disabled_reason === 'manual' ? 'disabled' : 'error',
-      last_error: message,
+      status: preserveDisabled ? 'disabled' : 'error',
+      last_error: currentAccount.disabled_reason === RISK_CONTROL_DISABLED_REASON
+        ? currentAccount.last_error || message
+        : message,
       last_synced_at: new Date().toISOString()
     })!
     if (options.throwOnError) throw err
@@ -315,6 +342,99 @@ export async function refreshAllAccounts() {
 
 export function refreshAccountsByIds(ids: number[]) {
   return mapConcurrent(ids, REFRESH_CONCURRENCY, refreshAccount)
+}
+
+export interface RiskControlCheckResult {
+  account: Account
+  blocked: boolean
+  upstreamStatus: number
+  errorType: string | null
+  message: string | null
+}
+
+export function markAccountRiskControlled(id: number, message: string | null): Account | undefined {
+  const account = getAccount(id)
+  if (!account) return undefined
+
+  const now = new Date().toISOString()
+  const updated = updateAccount(id, {
+    status: 'disabled',
+    disabled_reason: RISK_CONTROL_DISABLED_REASON,
+    auto_enable_at: null,
+    risk_control_checked_at: now,
+    risk_control_detected_at: account.disabled_reason === RISK_CONTROL_DISABLED_REASON
+      ? account.risk_control_detected_at || now
+      : now,
+    last_error: message || 'Request blocked by upstream provider.'
+  })!
+  updateAccountPollSchedule(updated)
+  return updated
+}
+
+export function checkAccountRiskControl(id: number): Promise<RiskControlCheckResult> {
+  return accountOperations.run(id, async () => {
+    const account = ensureAccountIpAssignment(id)
+    if (!account) {
+      throw createError({ statusCode: 404, statusMessage: 'Account not found' })
+    }
+    if (!account.upstream_api_key) {
+      throw createError({ statusCode: 409, statusMessage: 'Account does not have an upstream API key' })
+    }
+
+    const fetchImpl = createAccountFetch(account)
+    const response = await fetchImpl('https://opencode.ai/zen/go/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${account.upstream_api_key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: RISK_CONTROL_CHECK_MODEL,
+        messages: [{ role: 'user', content: 'Reply OK' }],
+        max_tokens: 1,
+        stream: false
+      }),
+      signal: AbortSignal.timeout(60_000)
+    })
+    const inspection = await inspectRiskControlResponse(response)
+    await response.body?.cancel().catch(() => {})
+    const checkedAt = new Date().toISOString()
+
+    let updated: Account
+    if (inspection.blocked) {
+      updated = markAccountRiskControlled(id, inspection.message)!
+    } else if (response.ok && account.disabled_reason === RISK_CONTROL_DISABLED_REASON) {
+      updated = updateAccount(id, {
+        status: 'active',
+        disabled_reason: null,
+        auto_enable_at: null,
+        risk_control_checked_at: checkedAt,
+        last_error: null
+      })!
+      updateAccountPollSchedule(updated)
+    } else {
+      updated = updateAccount(id, { risk_control_checked_at: checkedAt })!
+      updateAccountPollSchedule(updated)
+    }
+
+    return {
+      account: updated,
+      blocked: inspection.blocked,
+      upstreamStatus: response.status,
+      errorType: inspection.errorType,
+      message: inspection.message
+    }
+  })
+}
+
+export async function checkAllAccountRiskControls() {
+  const accounts = listAccounts().filter(account =>
+    Boolean(account.upstream_api_key) &&
+    account.disabled_reason !== 'manual' &&
+    (account.status === 'active' || account.disabled_reason === RISK_CONTROL_DISABLED_REASON)
+  )
+  return mapConcurrent(accounts, REFRESH_CONCURRENCY, account => checkAccountRiskControl(account.id))
 }
 
 export async function refreshDueAccounts(now = new Date()) {
