@@ -7,6 +7,7 @@ import {
   ProxyWorkerPool
 } from './proxy-worker-pool'
 import { createProxyRequestLifecycle } from './proxy-request-lifecycle'
+import { createAccountFetch } from './account-fetch'
 
 const GO_BASE = 'https://opencode.ai/zen/go/v1'
 const ACCOUNT_ERROR_STATUSES = new Set([401, 403, 408, 409, 429])
@@ -73,7 +74,8 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
       }
 
       try {
-        const response = await fetch(`${GO_BASE}/chat/completions`, {
+        const fetchImpl = createAccountFetch(account)
+        const response = await fetchImpl(`${GO_BASE}/chat/completions`, {
           method: 'POST',
           headers: upstreamHeaders(event, account.upstream_api_key!),
           body,
@@ -112,7 +114,8 @@ export async function proxyChatCompletions(event: H3Event): Promise<Response> {
 export async function proxyModels(event: H3Event): Promise<Response> {
   const account = getProxyCandidates()[0]
   try {
-    const response = await fetch(`${GO_BASE}/models`, {
+    const fetchImpl = account ? createAccountFetch(account) : fetch
+    const response = await fetchImpl(`${GO_BASE}/models`, {
       headers: upstreamHeaders(event, account?.upstream_api_key || undefined)
     })
     if (!response.ok && account) await refreshAfterUpstreamError(account.id)

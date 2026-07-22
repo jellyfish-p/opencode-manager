@@ -103,4 +103,11 @@ test('an authenticated SSR request can render a protected page', async () => {
 
   expect(pageResponse.status).toBe(200)
   expect(pageResponse.headers.get('location')).toBeNull()
+
+  const ipPoolResponse = await fetch(`${baseUrl}/ip-pool`, {
+    headers: { cookie: sessionCookie! },
+    redirect: 'manual'
+  })
+  expect(ipPoolResponse.status).toBe(200)
+  expect(await ipPoolResponse.text()).toContain('IP 池')
 })

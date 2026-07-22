@@ -6,6 +6,7 @@ Nuxt UI 全栈号池管理：SQLite 存储账号，通过浏览器 Cookie 自动
 
 - Admin Key 登录（读取 `config.yaml`）
 - 号池 CRUD：粘贴 auth cookie 自动同步
+- 出口 IP 池：HTTP/HTTPS 代理批量导入、连通性检测、稳定分块绑定与面板管理
 - 解析 workspace、邮箱、滚动/周/月用量、推荐码
 - 单号刷新 / 全部刷新
 - OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
@@ -56,6 +57,12 @@ bun run dev
 
 输入仅接受纯 auth Cookie value，不会从完整 Cookie、`auth=` 前缀或其他键值中兼容提取。旧数据库中的完整 Cookie 会在启动时一次性迁移为纯 value。
 
+## IP 池
+
+在后台「IP 池」页面可以批量添加 `http://user:pass@host:port`、`host:port` 或 `host:port:user:pass` 格式的出口代理。代理凭据仅保存在服务端，管理接口会隐藏密码。
+
+账号绑定会持久化到 SQLite。新账号按设置的块大小分配给当前绑定数最少的可用代理；新增代理不会改变已有账号出口。只有停用或删除代理时，系统才会迁移该代理上的账号；没有可用代理时保持原有直连行为。账号同步、推荐奖励、订阅操作和 `/v1` 聊天转发都会使用同一绑定出口。
+
 系统流程：
 
 1. `GET https://opencode.ai/auth`（携带 Cookie）→ `Location: /workspace/wrk_xxx`
@@ -64,7 +71,7 @@ bun run dev
 ## 数据
 
 - SQLite: `data/opencode.db`
-- Cookie 仅存服务端，API 不回传 `auth_cookie`
+- Cookie 仅存服务端；账号列表和通用详情不回传 `auth_cookie`，编辑页通过管理员鉴权的禁缓存接口按需读取
 - 可通过 `DATA_DIR` 环境变量修改数据目录（Docker 镜像默认为 `/app/data`）
 
 ## API
@@ -78,6 +85,7 @@ bun run dev
 | POST | `/api/accounts` | 单个账号：`{ name?, auth_cookie }`，`auth_cookie` 仅接受纯 value |
 | POST | `/api/accounts/batch` | 批量账号：`{ name?, auth_cookie_values }`，按行分隔纯 value |
 | PATCH | `/api/accounts/:id` | 更新 |
+| GET | `/api/accounts/:id/auth-cookie` | 管理员编辑时读取当前纯 auth value（禁缓存） |
 | DELETE | `/api/accounts/:id` | 删除 |
 | POST | `/api/accounts/:id/refresh` | 刷新单号 |
 | POST | `/api/accounts/refresh-all` | 刷新全部 |
@@ -86,6 +94,11 @@ bun run dev
 | POST | `/api/api-keys` | 创建对外 API 密钥 |
 | DELETE | `/api/api-keys/:id` | 删除网页创建的密钥 |
 | DELETE | `/api/accounts/non-members` | 删除全部非会员账号 |
+| GET / POST | `/api/ip-pool` | IP 池列表 / 批量添加代理 |
+| PATCH / DELETE | `/api/ip-pool/:id` | 编辑、启停 / 删除代理 |
+| POST | `/api/ip-pool/:id/test` | 检测代理出口 IP |
+| PATCH | `/api/ip-pool/settings` | 设置自动分块大小 |
+| POST | `/api/ip-pool/assign` | 补齐缺失或失效的账号绑定 |
 | GET | `/v1/models` | OpenAI 兼容模型列表 |
 | POST | `/v1/chat/completions` | OpenAI 兼容聊天接口 |
 

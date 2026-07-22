@@ -8,6 +8,7 @@ const {
   fetchStats,
   addAccounts,
   updateAccount,
+  fetchAccountAuthCookie,
   removeAccount,
   removeNonMembers,
   refreshAccount,
@@ -25,6 +26,9 @@ const openActions = ref(false)
 const formName = ref('')
 const formCookie = ref('')
 const editing = ref<Account | null>(null)
+const editCookieLoading = ref(false)
+const initialEditCookie = ref('')
+const editCookieRequestGeneration = ref(0)
 const actionAccount = ref<Account | null>(null)
 const submitting = ref(false)
 const accountAction = ref<'referral' | 'cancel-renewal' | null>(null)
@@ -55,8 +59,11 @@ const nonMemberCount = computed(() =>
 await Promise.all([fetchAccounts(), fetchStats()])
 
 function resetForm() {
+  editCookieRequestGeneration.value++
   formName.value = ''
   formCookie.value = ''
+  initialEditCookie.value = ''
+  editCookieLoading.value = false
   editing.value = null
 }
 
@@ -65,11 +72,41 @@ function openAddModal() {
   openAdd.value = true
 }
 
-function openEditModal(account: Account) {
+async function openEditModal(account: Account) {
+  const requestGeneration = ++editCookieRequestGeneration.value
   editing.value = account
   formName.value = account.name || ''
   formCookie.value = ''
+  initialEditCookie.value = ''
   openEdit.value = true
+  editCookieLoading.value = true
+  try {
+    const result = await fetchAccountAuthCookie(account.id)
+    if (
+      editCookieRequestGeneration.value === requestGeneration &&
+      openEdit.value &&
+      editing.value?.id === account.id
+    ) {
+      formCookie.value = result.auth_cookie
+      initialEditCookie.value = result.auth_cookie
+    }
+  } catch (e: any) {
+    if (
+      editCookieRequestGeneration.value === requestGeneration &&
+      openEdit.value &&
+      editing.value?.id === account.id
+    ) {
+      toast.add({ title: e?.data?.statusMessage || e?.message || 'Cookie value 加载失败', color: 'error' })
+    }
+  } finally {
+    if (
+      editCookieRequestGeneration.value === requestGeneration &&
+      openEdit.value &&
+      editing.value?.id === account.id
+    ) {
+      editCookieLoading.value = false
+    }
+  }
 }
 
 async function openActionsModal(account: Account) {
@@ -102,6 +139,15 @@ function closeAddModal() {
 
 function closeEditModal() {
   openEdit.value = false
+  resetForm()
+}
+
+function onEditModalOpenChange(value: boolean) {
+  if (value) {
+    openEdit.value = true
+  } else {
+    closeEditModal()
+  }
 }
 
 function closeActionsModal() {
@@ -186,11 +232,12 @@ async function onAdd() {
 
 async function onEdit() {
   if (!editing.value) return
+  const nextCookie = formCookie.value.trim()
   submitting.value = true
   try {
     await updateAccount(editing.value.id, {
       name: formName.value,
-      ...(formCookie.value.trim() ? { auth_cookie: formCookie.value } : {})
+      ...(nextCookie && nextCookie !== initialEditCookie.value ? { auth_cookie: nextCookie } : {})
     })
     toast.add({ title: '账号已更新', color: 'success' })
     openEdit.value = false
@@ -336,6 +383,7 @@ async function copyReferralLink(code: string) {
             <tr class="text-left text-muted">
               <th class="px-4 py-3 font-medium">账号</th>
               <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium">出口</th>
               <th class="px-4 py-3 font-medium">滚动</th>
               <th class="px-4 py-3 font-medium">每周</th>
               <th class="px-4 py-3 font-medium">每月</th>
@@ -387,6 +435,11 @@ async function copyReferralLink(code: string) {
                 </UBadge>
                 <div v-if="account.disabled_reason" class="mt-1 text-xs text-muted">{{ account.disabled_reason }}</div>
                 <div v-if="account.auto_enable_at" class="mt-1 text-xs text-muted">恢复 {{ formatDate(account.auto_enable_at) }}</div>
+              </td>
+              <td class="px-4 py-3">
+                <UBadge :color="account.ip_pool_id ? 'info' : 'neutral'" variant="subtle">
+                  {{ account.ip_pool_id ? `IP #${account.ip_pool_id}` : '直连' }}
+                </UBadge>
               </td>
               <td class="px-4 py-3">
                 <div>{{ formatPercent(account.rolling_usage) }}</div>
@@ -499,17 +552,18 @@ async function copyReferralLink(code: string) {
       </template>
     </UModal>
 
-    <UModal v-model:open="openEdit" title="编辑账号">
+    <UModal :open="openEdit" title="编辑账号" @update:open="onEditModalOpenChange">
       <template #body>
         <div class="space-y-4">
           <UFormField label="备注名称" name="name">
             <UInput v-model="formName" placeholder="可选" class="w-full" />
           </UFormField>
-          <UFormField label="更新 Auth Cookie Value" name="cookie">
+          <UFormField label="Auth Cookie Value" name="cookie">
             <UTextarea
               v-model="formCookie"
               :rows="5"
-              placeholder="仅填写 auth={value} 中的 value；留空则不修改"
+              :disabled="editCookieLoading"
+              :placeholder="editCookieLoading ? '正在加载当前 value…' : '仅填写 auth={value} 中的 value'"
               class="w-full font-mono text-xs"
             />
           </UFormField>
@@ -518,7 +572,7 @@ async function copyReferralLink(code: string) {
       <template #footer>
         <div class="flex justify-end gap-2">
           <UButton color="neutral" variant="ghost" @click="closeEditModal">取消</UButton>
-          <UButton color="primary" :loading="submitting" @click="onEdit">保存</UButton>
+          <UButton color="primary" :loading="submitting" :disabled="editCookieLoading" @click="onEdit">保存</UButton>
         </div>
       </template>
     </UModal>

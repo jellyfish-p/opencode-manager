@@ -25,6 +25,7 @@ export interface Account {
   subscription_ends_at: string | null
   subscription_cancel_error: string | null
   has_upstream_api_key: boolean
+  ip_pool_id: number | null
   status: 'pending' | 'active' | 'error' | 'disabled'
   disabled_reason: string | null
   auto_enable_at: string | null
@@ -107,6 +108,10 @@ export function useAccounts() {
     return account
   }
 
+  async function fetchAccountAuthCookie(id: number) {
+    return requestFetch<{ auth_cookie: string }>(`/api/accounts/${id}/auth-cookie`)
+  }
+
   async function removeAccount(id: number) {
     await requestFetch(`/api/accounts/${id}`, { method: 'DELETE' })
     await Promise.all([fetchAccounts(), fetchStats()])
@@ -174,6 +179,7 @@ export function useAccounts() {
     fetchStats,
     addAccounts,
     updateAccount,
+    fetchAccountAuthCookie,
     removeAccount,
     removeNonMembers,
     refreshAccount,

@@ -16,12 +16,14 @@ export default defineEventHandler(async (event) => {
     name: body.name,
     auth_cookie: authCookie
   })
+  ensureStableIpAssignments()
+  const assignedAccount = getAccount(account.id)!
 
   if (body.refresh !== false) {
-    const refreshed = await refreshAccount(account.id)
+    const refreshed = await refreshAccount(assignedAccount.id)
     return toPublicAccount(refreshed)
   }
 
-  updateAccountPollSchedule(account)
-  return toPublicAccount(account)
+  updateAccountPollSchedule(assignedAccount)
+  return toPublicAccount(assignedAccount)
 })

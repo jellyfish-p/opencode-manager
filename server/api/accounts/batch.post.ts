@@ -27,10 +27,12 @@ export default defineEventHandler(async (event) => {
       : undefined,
     auth_cookie: authCookie
   }))
+  ensureStableIpAssignments()
+  const assignedCreated = created.map(account => getAccount(account.id)!)
 
   const accounts = body.refresh === false
-    ? created
-    : await refreshAccountsByIds(created.map(account => account.id))
+    ? assignedCreated
+    : await refreshAccountsByIds(assignedCreated.map(account => account.id))
   if (body.refresh === false) {
     for (const account of accounts) updateAccountPollSchedule(account)
   }

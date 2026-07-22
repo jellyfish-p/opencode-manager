@@ -4,6 +4,8 @@ import { AccountOperationQueue } from './account-operation-queue'
 import { AccountPollSchedule } from './account-polling'
 import { validateAuthCookieValue } from './auth-cookie'
 import type { OpenCodeAccountInfo } from './opencode'
+import { createAccountFetch } from './account-fetch'
+import { ensureAccountIpAssignment } from './ip-pool'
 import {
   cacheAvailableReferralRewards,
   consumeCachedReferralReward,
@@ -145,13 +147,14 @@ export function refreshAccount(id: number): Promise<Account> {
 }
 
 async function refreshAccountOnce(id: number, options: RefreshAccountOptions): Promise<Account> {
-  const account = getAccount(id)
+  const account = ensureAccountIpAssignment(id)
   if (!account) {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
   }
+  const fetchImpl = createAccountFetch(account)
 
   try {
-    let info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id)
+    let info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
     cacheReferralRewards(id, info)
     let referralError: string | null = null
     const attemptedRewards = new Set<string>()
@@ -178,11 +181,12 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
           account.auth_cookie,
           info.workspaceId,
           referralId,
-          info.referralApplyServerId
+          info.referralApplyServerId,
+          fetchImpl
         )
         consumeCachedReferralReward(id, referralId)
       } catch (error) {
-        const latest = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId)
+        const latest = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId, fetchImpl)
         cacheReferralRewards(id, latest)
         if (latest.availableReferralRewardIds.includes(referralId)) throw error
         // Another process applied the same reward after this refresh began.
@@ -194,7 +198,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         last_referral_reward_id: referralId,
         last_referral_reward_applied_at: appliedAt
       })
-      info = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId)
+      info = await fetchOpenCodeAccount(account.auth_cookie, info.workspaceId, fetchImpl)
       cacheReferralRewards(id, info)
     }
 
@@ -220,7 +224,8 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
               account.auth_cookie,
               workspaceId,
               info.liteSubscriptionId,
-              info.billingPortalServerId
+              info.billingPortalServerId,
+              fetchImpl
             )
             const cancelledAt = new Date().toISOString()
             subscriptionUpdate.cancelled_subscription_id = info.liteSubscriptionId
@@ -244,7 +249,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     let upstreamApiKey = account.upstream_api_key
     if (workspaceId) {
       try {
-        upstreamApiKey = await fetchOpenCodeApiKey(account.auth_cookie, workspaceId) || upstreamApiKey
+        upstreamApiKey = await fetchOpenCodeApiKey(account.auth_cookie, workspaceId, fetchImpl) || upstreamApiKey
       } catch {
         // Quota and membership refresh must still succeed if the keys page is temporarily unavailable.
       }
@@ -343,10 +348,11 @@ export function useAccountReferralReward(id: number, referralId: string) {
 }
 
 async function useAccountReferralRewardOnce(id: number, referralId: string) {
-  const account = getAccount(id)
+  const account = ensureAccountIpAssignment(id)
   if (!account) {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
   }
+  const fetchImpl = createAccountFetch(account)
 
   const cached = getCachedReferralRewards(id)
   if (!cached) {
@@ -364,7 +370,8 @@ async function useAccountReferralRewardOnce(id: number, referralId: string) {
     account.auth_cookie,
     selected.workspaceId,
     selected.rewardId,
-    selected.applyServerId
+    selected.applyServerId,
+    fetchImpl
   )
   consumeCachedReferralReward(id, selected.rewardId)
   updateAccount(id, {
@@ -394,12 +401,13 @@ async function useAccountReferralRewardOnce(id: number, referralId: string) {
 }
 
 export async function cancelAccountRenewal(id: number) {
-  const account = getAccount(id)
+  const account = ensureAccountIpAssignment(id)
   if (!account) {
     throw createError({ statusCode: 404, statusMessage: 'Account not found' })
   }
+  const fetchImpl = createAccountFetch(account)
 
-  const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id)
+  const info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
   if (info.subscriptionStatus !== 'active') {
     throw createError({ statusCode: 409, statusMessage: 'Account does not have an active subscription' })
   }
@@ -411,7 +419,8 @@ export async function cancelAccountRenewal(id: number) {
     account.auth_cookie,
     info.workspaceId,
     info.liteSubscriptionId,
-    info.billingPortalServerId
+    info.billingPortalServerId,
+    fetchImpl
   )
   const checkedAt = new Date().toISOString()
   updateAccount(id, {

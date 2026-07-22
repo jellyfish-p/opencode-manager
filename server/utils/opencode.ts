@@ -402,8 +402,8 @@ export async function cancelOpenCodeSubscriptionRenewal(
   return { alreadyCancelled: false, currentPeriodEnd: periodEndFromUnix(after.current_period_end) }
 }
 
-async function resolveWorkspaceId(cookie: string): Promise<string> {
-  const authRes = await fetch(`${BASE}/auth`, {
+async function resolveWorkspaceId(cookie: string, fetchImpl: typeof fetch): Promise<string> {
+  const authRes = await fetchImpl(`${BASE}/auth`, {
     method: 'GET',
     redirect: 'manual',
     headers: commonHeaders(cookie)
@@ -433,8 +433,12 @@ async function resolveWorkspaceId(cookie: string): Promise<string> {
   return workspaceId
 }
 
-async function loadWorkspace(cookie: string, workspaceId: string): Promise<OpenCodeAccountInfo> {
-  const goRes = await fetch(`${BASE}/workspace/${workspaceId}/go`, {
+async function loadWorkspace(
+  cookie: string,
+  workspaceId: string,
+  fetchImpl: typeof fetch
+): Promise<OpenCodeAccountInfo> {
+  const goRes = await fetchImpl(`${BASE}/workspace/${workspaceId}/go`, {
     method: 'GET',
     redirect: 'follow',
     headers: commonHeaders(cookie)
@@ -468,10 +472,10 @@ async function loadWorkspace(cookie: string, workspaceId: string): Promise<OpenC
   if (info.availableReferralRewardIds.length || info.liteSubscriptionId) {
     const [referralServerId, billingServerId] = await Promise.all([
       info.availableReferralRewardIds.length
-        ? discoverReferralApplyServerId(html)
+        ? discoverReferralApplyServerId(html, fetchImpl)
         : Promise.resolve(null),
       info.liteSubscriptionId
-        ? discoverBillingPortalServerId(html)
+        ? discoverBillingPortalServerId(html, fetchImpl)
         : Promise.resolve(null)
     ])
     info.referralApplyServerId = referralServerId
@@ -482,29 +486,31 @@ async function loadWorkspace(cookie: string, workspaceId: string): Promise<OpenC
 
 export async function fetchOpenCodeAccount(
   authCookie: string,
-  cachedWorkspaceId?: string | null
+  cachedWorkspaceId?: string | null,
+  fetchImpl: typeof fetch = fetch
 ): Promise<OpenCodeAccountInfo> {
   const cookie = buildAuthCookie(authCookie)
   const cachedId = cachedWorkspaceId?.trim()
 
   if (cachedId) {
     try {
-      return await loadWorkspace(cookie, cachedId)
+      return await loadWorkspace(cookie, cachedId, fetchImpl)
     } catch {
       // Resolve once through /auth below and replace the stale cache.
     }
   }
 
-  const workspaceId = await resolveWorkspaceId(cookie)
-  return loadWorkspace(cookie, workspaceId)
+  const workspaceId = await resolveWorkspaceId(cookie, fetchImpl)
+  return loadWorkspace(cookie, workspaceId, fetchImpl)
 }
 
 export async function fetchOpenCodeApiKey(
   authCookie: string,
-  workspaceId: string
+  workspaceId: string,
+  fetchImpl: typeof fetch = fetch
 ): Promise<string | null> {
   const cookie = buildAuthCookie(authCookie)
-  const response = await fetch(`${BASE}/workspace/${workspaceId}/keys`, {
+  const response = await fetchImpl(`${BASE}/workspace/${workspaceId}/keys`, {
     method: 'GET',
     redirect: 'follow',
     headers: commonHeaders(cookie)

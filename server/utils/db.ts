@@ -34,6 +34,7 @@ export interface Account {
   subscription_ends_at: string | null
   subscription_cancel_error: string | null
   upstream_api_key: string | null
+  ip_pool_id: number | null
   status: AccountStatus
   disabled_reason: string | null
   auto_enable_at: string | null
@@ -53,6 +54,19 @@ export interface ManagedApiKey {
   key_hash: string
   key_prefix: string
   created_at: string
+}
+
+export interface IpPoolEntry {
+  id: number
+  name: string | null
+  proxy_url: string
+  enabled: number
+  last_ip: string | null
+  last_check_ok: number | null
+  last_checked_at: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
 }
 
 type SQLiteValue = string | number | bigint | boolean | Uint8Array | null
@@ -164,6 +178,19 @@ export function getDb() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS ip_pool (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      proxy_url TEXT NOT NULL UNIQUE,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_ip TEXT,
+      last_check_ok INTEGER,
+      last_checked_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -171,6 +198,7 @@ export function getDb() {
   `)
 
   migrateAccountColumns(db)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_ip_pool_id ON accounts(ip_pool_id)')
   migrateStoredAuthCookieValues(db)
 
   return db
@@ -211,6 +239,7 @@ function migrateAccountColumns(database: SQLiteDatabase) {
     subscription_ends_at: 'TEXT',
     subscription_cancel_error: 'TEXT',
     upstream_api_key: 'TEXT',
+    ip_pool_id: 'INTEGER',
     disabled_reason: 'TEXT',
     auto_enable_at: 'TEXT'
   }
