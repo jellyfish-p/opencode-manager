@@ -6,7 +6,7 @@ Nuxt UI 全栈号池管理：SQLite 存储账号，通过浏览器 Cookie 自动
 
 - Admin Key 登录（读取 `config.yaml`）
 - 号池 CRUD：粘贴 auth cookie 自动同步
-- 出口 IP 池：HTTP/HTTPS 代理批量导入、连通性检测、稳定分块绑定与面板管理
+- 出口 IP 池：HTTP/HTTPS/SOCKS5 代理批量导入、连通性检测、稳定分块绑定与面板管理
 - 解析 workspace、邮箱、滚动/周/月用量、推荐码
 - 单号刷新 / 全部刷新
 - OpenAI 兼容的 `/v1/models`、`/v1/chat/completions`（支持流式透传）
@@ -59,7 +59,7 @@ bun run dev
 
 ## IP 池
 
-在后台「IP 池」页面可以批量添加 `http://user:pass@host:port`、`host:port` 或 `host:port:user:pass` 格式的出口代理。代理凭据仅保存在服务端，管理接口会隐藏密码。
+在后台「IP 池」页面可以批量添加 `http://user:pass@host:port`、`socks5://user:pass@host:port`、`socks5h://host:port`、`host:port` 或 `host:port:user:pass` 格式的出口代理；`sk5://` 会兼容转换为 `socks5://`。代理凭据仅保存在服务端，管理接口会隐藏密码。
 
 账号绑定会持久化到 SQLite。新账号按设置的块大小分配给当前绑定数最少的可用代理；新增代理不会改变已有账号出口。只有停用或删除代理时，系统才会迁移该代理上的账号；没有可用代理时保持原有直连行为。账号同步、推荐奖励、订阅操作和 `/v1` 聊天转发都会使用同一绑定出口。
 

@@ -347,10 +347,10 @@ async function assignUnbound() {
               v-model="formUrls"
               :rows="7"
               class="w-full font-mono text-xs"
-              placeholder="每行一个，例如：&#10;http://user:pass@1.2.3.4:8080&#10;1.2.3.4:8080&#10;1.2.3.4:8080:user:pass"
+              placeholder="每行一个，例如：&#10;http://user:pass@1.2.3.4:8080&#10;socks5://user:pass@1.2.3.4:1080&#10;1.2.3.4:8080:user:pass"
             />
           </UFormField>
-          <UAlert color="neutral" variant="subtle" title="支持 HTTP / HTTPS 代理" description="账号密码只保存在服务端，列表中密码会被隐藏。" />
+          <UAlert color="neutral" variant="subtle" title="支持 HTTP / HTTPS / SOCKS5 代理" description="SOCKS5 可使用 socks5://、socks5h:// 或 sk5://；账号密码只保存在服务端，列表中密码会被隐藏。" />
         </div>
       </template>
       <template #footer>

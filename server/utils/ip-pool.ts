@@ -26,6 +26,7 @@ export interface IpAssignmentChange {
 export function normalizeProxyUrl(input: unknown) {
   if (typeof input !== 'string' || !input.trim()) throw new Error('Proxy URL is required')
   let value = input.trim()
+  if (/^sk5:\/\//i.test(value)) value = value.replace(/^sk5:/i, 'socks5:')
 
   // Accept the common ip:port:user:password export format in addition to URLs.
   if (!value.includes('://') && !value.includes('@')) {
@@ -43,8 +44,8 @@ export function normalizeProxyUrl(input: unknown) {
   } catch {
     throw new Error('Invalid proxy URL')
   }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new Error('Only HTTP and HTTPS proxies are supported')
+  if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol)) {
+    throw new Error('Only HTTP, HTTPS and SOCKS5 proxies are supported')
   }
   if (!url.hostname || !url.port) throw new Error('Proxy host and port are required')
   url.pathname = ''

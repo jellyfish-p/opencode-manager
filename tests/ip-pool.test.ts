@@ -14,6 +14,12 @@ describe('IP pool proxy URLs', () => {
     expect(normalizeProxyUrl('1.2.3.4:8080:user:pass')).toBe(
       'http://user:pass@1.2.3.4:8080/'
     )
+    expect(normalizeProxyUrl('sk5://user:pass@1.2.3.4:1080')).toBe(
+      'socks5://user:pass@1.2.3.4:1080'
+    )
+    expect(normalizeProxyUrl('socks5h://1.2.3.4:1080')).toBe(
+      'socks5h://1.2.3.4:1080'
+    )
   })
 
   test('never exposes proxy passwords in public data', () => {

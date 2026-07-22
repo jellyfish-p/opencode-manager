@@ -22,8 +22,9 @@
     "@nuxt/ui": "^4.9.0",
     "better-sqlite3": "^12.11.1",
     "nuxt": "^4.4.8",
+    "socks": "^2.8.7",
     "tailwindcss": "^4.3.2",
-    "undici": "^6.21.0",
+    "undici-client": "npm:undici@^6.21.0",
     "vue": "^3.5.39",
     "vue-router": "^5.1.0",
     "yaml": "^2.9.0"
