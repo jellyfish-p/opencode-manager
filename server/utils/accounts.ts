@@ -263,7 +263,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     }
 
     let upstreamApiKey = account.upstream_api_key
-    if (workspaceId) {
+    if (workspaceId && !upstreamApiKey) {
       try {
         upstreamApiKey = await fetchOpenCodeApiKey(account.auth_cookie, workspaceId, fetchImpl) || upstreamApiKey
       } catch {

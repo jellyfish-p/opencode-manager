@@ -81,6 +81,22 @@ export interface BulkAccountActionResult {
   accounts: Account[]
 }
 
+export type AccountBatchAction = BulkAccountAction | 'delete'
+
+export interface AccountBatchProgress {
+  completed: number
+  total: number
+  succeeded: number
+  failed: number
+  skipped: number
+}
+
+export interface AccountBatchResult extends AccountBatchProgress {
+  processed: number
+  blocked: number
+  accounts: Account[]
+}
+
 export function useAccounts() {
   const accounts = useState<Account[]>('accounts', () => [])
   const stats = useState<Stats | null>('stats', () => null)
@@ -227,6 +243,98 @@ export function useAccounts() {
     return result
   }
 
+  async function runAccountBatch(
+    ids: number[],
+    action: AccountBatchAction,
+    onProgress?: (progress: AccountBatchProgress) => void
+  ): Promise<AccountBatchResult> {
+    const uniqueIds = [...new Set(ids)]
+    const accountById = new Map(accounts.value.map(account => [account.id, account]))
+    const requestedAccounts = uniqueIds
+      .map(id => accountById.get(id))
+      .filter((account): account is Account => Boolean(account))
+    const eligibleAccounts = requestedAccounts.filter((account) => {
+      if (action === 'risk-control-check') return account.has_upstream_api_key
+      if (action === 'enable') return account.status === 'disabled'
+      if (action === 'disable') return account.status !== 'disabled'
+      return true
+    })
+
+    const progress: AccountBatchProgress = {
+      completed: 0,
+      total: eligibleAccounts.length,
+      succeeded: 0,
+      failed: 0,
+      skipped: uniqueIds.length - eligibleAccounts.length
+    }
+    const updatedAccounts: Account[] = []
+    let blocked = 0
+    let cursor = 0
+    onProgress?.({ ...progress })
+
+    async function execute(account: Account) {
+      if (action === 'delete') {
+        await requestFetch(`/api/accounts/${account.id}`, { method: 'DELETE' })
+        return
+      }
+      if (action === 'risk-control-check') {
+        const result = await requestFetch<RiskControlCheckResult>(
+          `/api/accounts/${account.id}/risk-control-check`,
+          { method: 'POST' }
+        )
+        updatedAccounts.push(result.account)
+        if (result.blocked) blocked++
+        return
+      }
+      if (action === 'disable') {
+        const updated = await requestFetch<Account>(`/api/accounts/${account.id}`, {
+          method: 'PATCH',
+          body: { status: 'disabled' }
+        })
+        updatedAccounts.push(updated)
+        return
+      }
+      if (action === 'enable') {
+        await requestFetch<Account>(`/api/accounts/${account.id}`, {
+          method: 'PATCH',
+          body: { status: 'pending' }
+        })
+      }
+      const updated = await requestFetch<Account>(
+        `/api/accounts/${account.id}/refresh`,
+        { method: 'POST' }
+      )
+      updatedAccounts.push(updated)
+      if (updated.status === 'error') throw new Error(updated.last_error || 'Account refresh failed')
+    }
+
+    async function worker() {
+      while (cursor < eligibleAccounts.length) {
+        const account = eligibleAccounts[cursor++]!
+        try {
+          await execute(account)
+          progress.succeeded++
+        } catch {
+          progress.failed++
+        } finally {
+          progress.completed++
+          onProgress?.({ ...progress })
+        }
+      }
+    }
+
+    await Promise.all(
+      Array.from({ length: Math.min(4, eligibleAccounts.length) }, worker)
+    )
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return {
+      ...progress,
+      processed: progress.completed,
+      blocked,
+      accounts: updatedAccounts
+    }
+  }
+
   return {
     accounts,
     stats,
@@ -246,6 +354,7 @@ export function useAccounts() {
     refreshAll,
     checkRiskControl,
     checkAllRiskControls,
-    runBulkAccountAction
+    runBulkAccountAction,
+    runAccountBatch
   }
 }

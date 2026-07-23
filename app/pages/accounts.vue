@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import type { Account, BulkAccountAction } from '~/composables/useAccounts'
+import type {
+  Account,
+  AccountBatchAction,
+  AccountBatchProgress
+} from '~/composables/useAccounts'
 
 const {
   accounts,
@@ -10,16 +14,13 @@ const {
   updateAccount,
   fetchAccountAuthCookie,
   removeAccount,
-  removeAccounts,
   removeNonMembers,
   refreshAccount,
   fetchReferralRewards,
   useReferralReward,
   cancelRenewal,
-  refreshAll,
   checkRiskControl,
-  checkAllRiskControls,
-  runBulkAccountAction
+  runAccountBatch
 } = useAccounts()
 
 const toast = useToast()
@@ -48,7 +49,8 @@ const checkingAllRiskControls = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
 const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
 const selectedAccountIds = ref<number[]>([])
-const bulkAction = ref<BulkAccountAction | 'delete' | null>(null)
+const bulkAction = ref<AccountBatchAction | null>(null)
+const batchProgress = ref<(AccountBatchProgress & { label: string }) | null>(null)
 
 const filteredAccounts = computed(() => {
   return accounts.value.filter((account) => {
@@ -357,12 +359,26 @@ async function onDelete(id: number) {
 async function onRefreshAll() {
   refreshingAll.value = true
   try {
-    await refreshAll()
-    toast.add({ title: '全部账号已刷新', color: 'success' })
+    const ids = accounts.value
+      .filter(account => account.disabled_reason !== 'manual')
+      .map(account => account.id)
+    const result = await runAccountBatch(
+      ids,
+      'refresh',
+      progress => {
+        batchProgress.value = { label: '全部刷新', ...progress }
+      }
+    )
+    toast.add({
+      title: `已刷新 ${result.succeeded} 个账号`,
+      description: result.failed ? `${result.failed} 个账号刷新失败` : undefined,
+      color: result.failed ? 'warning' : 'success'
+    })
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || '刷新失败', color: 'error' })
   } finally {
     refreshingAll.value = false
+    batchProgress.value = null
   }
 }
 
@@ -389,17 +405,35 @@ async function onCheckRiskControl(account: Account) {
 async function onCheckAllRiskControls() {
   checkingAllRiskControls.value = true
   try {
-    const results = await checkAllRiskControls()
-    const blocked = results.filter(result => result.blocked).length
+    const ids = accounts.value
+      .filter(account =>
+        account.has_upstream_api_key &&
+        account.disabled_reason !== 'manual' &&
+        (account.status === 'active' || account.disabled_reason === 'risk_control')
+      )
+      .map(account => account.id)
+    const result = await runAccountBatch(
+      ids,
+      'risk-control-check',
+      progress => {
+        batchProgress.value = { label: '全部风控检测', ...progress }
+      }
+    )
     toast.add({
-      title: blocked ? `检测完成，自动禁用 ${blocked} 个风控账号` : '风控检测完成，未发现风控账号',
-      description: `共检测 ${results.length} 个可用或待复检账号`,
-      color: blocked ? 'warning' : 'success'
+      title: result.blocked
+        ? `检测完成，自动禁用 ${result.blocked} 个风控账号`
+        : '风控检测完成，未发现风控账号',
+      description: [
+        `共检测 ${result.succeeded} 个可用或待复检账号`,
+        result.failed ? `${result.failed} 个检测失败` : ''
+      ].filter(Boolean).join('；'),
+      color: result.blocked || result.failed ? 'warning' : 'success'
     })
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || e?.message || '批量风控检测失败', color: 'error' })
   } finally {
     checkingAllRiskControls.value = false
+    batchProgress.value = null
   }
 }
 
@@ -413,49 +447,51 @@ async function onDeleteNonMembers() {
   }
 }
 
-async function onBulkAction(action: BulkAccountAction | 'delete') {
+async function onBulkAction(action: AccountBatchAction) {
   const ids = [...selectedAccountIds.value]
   if (!ids.length) return
   if (action === 'delete' && !confirm(`确认删除选中的 ${ids.length} 个账号？`)) return
 
   bulkAction.value = action
   try {
-    if (action === 'delete') {
-      const result = await removeAccounts(ids)
-      toast.add({ title: `已删除 ${result.deleted} 个账号`, color: 'success' })
-    } else {
-      const result = await runBulkAccountAction(ids, action)
-      const labels: Record<BulkAccountAction, string> = {
-        refresh: '刷新',
-        'risk-control-check': '风控检测',
-        enable: '启用',
-        disable: '禁用'
-      }
-      const failed = result.accounts.filter(account => account.status === 'error').length
-      const description = [
-        result.skipped
-          ? action === 'risk-control-check'
-            ? `跳过 ${result.skipped} 个缺少上游 Key 的账号`
-            : action === 'enable'
-              ? `跳过 ${result.skipped} 个未处于禁用状态的账号`
-              : action === 'disable'
-                ? `跳过 ${result.skipped} 个已禁用账号`
-                : ''
-          : '',
-        action === 'risk-control-check' && result.blocked ? `发现 ${result.blocked} 个风控账号` : '',
-        failed ? `${failed} 个账号同步失败` : ''
-      ].filter(Boolean).join('；')
-      toast.add({
-        title: `已对 ${result.processed} 个账号完成${labels[action]}`,
-        description: description || undefined,
-        color: result.blocked || result.skipped || failed ? 'warning' : 'success'
-      })
+    const labels: Record<AccountBatchAction, string> = {
+      refresh: '刷新',
+      'risk-control-check': '风控检测',
+      enable: '启用',
+      disable: '禁用',
+      delete: '删除'
     }
+    const result = await runAccountBatch(
+      ids,
+      action,
+      progress => {
+        batchProgress.value = { label: `批量${labels[action]}`, ...progress }
+      }
+    )
+    const description = [
+      result.skipped
+        ? action === 'risk-control-check'
+          ? `跳过 ${result.skipped} 个缺少上游 Key 的账号`
+          : action === 'enable'
+            ? `跳过 ${result.skipped} 个未处于禁用状态的账号`
+            : action === 'disable'
+              ? `跳过 ${result.skipped} 个已禁用账号`
+              : ''
+        : '',
+      action === 'risk-control-check' && result.blocked ? `发现 ${result.blocked} 个风控账号` : '',
+      result.failed ? `${result.failed} 个账号操作失败` : ''
+    ].filter(Boolean).join('；')
+    toast.add({
+      title: `已对 ${result.succeeded} 个账号完成${labels[action]}`,
+      description: description || undefined,
+      color: result.blocked || result.skipped || result.failed ? 'warning' : 'success'
+    })
     selectedAccountIds.value = []
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || e?.message || '批量操作失败', color: 'error' })
   } finally {
     bulkAction.value = null
+    batchProgress.value = null
   }
 }
 
@@ -496,6 +532,7 @@ async function copyReferralLink(code: string) {
           color="neutral"
           variant="outline"
           :loading="checkingAllRiskControls"
+          :disabled="Boolean(batchProgress)"
           @click="onCheckAllRiskControls"
         >
           风控检测
@@ -505,6 +542,7 @@ async function copyReferralLink(code: string) {
           color="neutral"
           variant="outline"
           :loading="refreshingAll || loading"
+          :disabled="Boolean(batchProgress)"
           @click="onRefreshAll"
         >
           全部刷新
@@ -513,6 +551,30 @@ async function copyReferralLink(code: string) {
           添加账号
         </UButton>
       </div>
+    </div>
+
+    <div
+      v-if="batchProgress"
+      class="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
+      aria-live="polite"
+    >
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin text-primary" />
+          <span class="font-medium text-highlighted">{{ batchProgress.label }}</span>
+        </div>
+        <span class="text-muted">
+          {{ batchProgress.completed }} / {{ batchProgress.total }}
+          <template v-if="batchProgress.failed"> · 失败 {{ batchProgress.failed }}</template>
+          <template v-if="batchProgress.skipped"> · 跳过 {{ batchProgress.skipped }}</template>
+        </span>
+      </div>
+      <UProgress
+        :model-value="batchProgress.completed"
+        :max="Math.max(batchProgress.total, 1)"
+        color="primary"
+        size="sm"
+      />
     </div>
 
     <div class="flex flex-wrap items-center justify-between gap-3">
@@ -544,7 +606,7 @@ async function copyReferralLink(code: string) {
           size="xs"
           color="neutral"
           variant="link"
-          :disabled="Boolean(bulkAction)"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
           @click="selectedAccountIds = []"
         >
           取消选择
@@ -557,7 +619,7 @@ async function copyReferralLink(code: string) {
           color="neutral"
           variant="ghost"
           :loading="bulkAction === 'risk-control-check'"
-          :disabled="Boolean(bulkAction)"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
           @click="onBulkAction('risk-control-check')"
         >
           风控检测
@@ -568,7 +630,7 @@ async function copyReferralLink(code: string) {
           color="neutral"
           variant="ghost"
           :loading="bulkAction === 'refresh'"
-          :disabled="Boolean(bulkAction)"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
           @click="onBulkAction('refresh')"
         >
           刷新
@@ -579,7 +641,7 @@ async function copyReferralLink(code: string) {
           color="neutral"
           variant="ghost"
           :loading="bulkAction === 'enable'"
-          :disabled="Boolean(bulkAction)"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
           @click="onBulkAction('enable')"
         >
           启用
@@ -590,7 +652,7 @@ async function copyReferralLink(code: string) {
           color="neutral"
           variant="ghost"
           :loading="bulkAction === 'disable'"
-          :disabled="Boolean(bulkAction)"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
           @click="onBulkAction('disable')"
         >
           禁用
@@ -601,7 +663,7 @@ async function copyReferralLink(code: string) {
           color="error"
           variant="ghost"
           :loading="bulkAction === 'delete'"
-          :disabled="Boolean(bulkAction)"
+          :disabled="Boolean(bulkAction) || Boolean(batchProgress)"
           @click="onBulkAction('delete')"
         >
           删除

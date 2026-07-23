@@ -46,7 +46,16 @@ const BASE = 'https://opencode.ai'
 const LOCALE = 'zh'
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-let routeModuleDiscovery: { signature: string; result: Promise<string[]> } | null = null
+const REQUEST_TIMEOUT_MS = 20_000
+
+interface RouteModuleCache {
+  signature: string
+  assets: string[]
+  modules: string[]
+  refreshing: Promise<boolean> | null
+}
+
+let routeModuleCache: RouteModuleCache | null = null
 
 export function buildAuthCookie(input: string): string {
   return `auth=${validateAuthCookieValue(input)}; oc_locale=${LOCALE}`
@@ -61,6 +70,18 @@ function commonHeaders(cookie: string): Record<string, string> {
     referer: `${BASE}/${LOCALE}/go`,
     'upgrade-insecure-requests': '1'
   }
+}
+
+function fetchWithDeadline(
+  fetchImpl: typeof fetch,
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit = {}
+) {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timeout])
+    : timeout
+  return fetchImpl(input, { ...init, signal })
 }
 
 function extractWorkspaceId(location: string | null): string | null {
@@ -188,26 +209,77 @@ async function loadOpenCodeRouteModules(
 
   const signature = assets.join('|')
   if (!signature) return []
-  if (routeModuleDiscovery?.signature === signature) return routeModuleDiscovery.result
 
-  const result = (async () => {
-    return Promise.all(
-      assets.map(async (asset) => {
-        try {
-          const response = await fetchImpl(new URL(asset, BASE))
-          return response.ok ? response.text() : ''
-        } catch {
-          return ''
-        }
-      })
-    )
-  })()
-  routeModuleDiscovery = { signature, result }
-  const modules = await result
-  if (!modules.some(Boolean) && routeModuleDiscovery?.result === result) {
-    routeModuleDiscovery = null
+  if (routeModuleCache?.signature === signature) {
+    if (routeModuleCache.modules.length) return routeModuleCache.modules
+    await refreshRouteModuleCache(routeModuleCache, fetchImpl)
+    return routeModuleCache.modules
+  }
+
+  const cache: RouteModuleCache = {
+    signature,
+    assets,
+    modules: [],
+    refreshing: null
+  }
+  routeModuleCache = cache
+  const refreshed = await refreshRouteModuleCache(cache, fetchImpl)
+  if (!refreshed && routeModuleCache === cache) routeModuleCache = null
+  return cache.modules
+}
+
+async function fetchOpenCodeRouteModules(
+  assets: string[],
+  fetchImpl: typeof fetch
+) {
+  const modules: string[] = []
+  for (const asset of [...assets].reverse()) {
+    try {
+      const response = await fetchWithDeadline(fetchImpl, new URL(asset, BASE))
+      const source = response.ok ? await response.text() : ''
+      modules.push(source)
+      if (
+        /go\.referral\.reward\.apply/i.test(source) ||
+        /createSessionUrl_action/i.test(source)
+      ) {
+        break
+      }
+    } catch {
+      modules.push('')
+    }
   }
   return modules
+}
+
+function refreshRouteModuleCache(
+  cache: RouteModuleCache,
+  fetchImpl: typeof fetch
+) {
+  if (cache.refreshing) return cache.refreshing
+
+  let refresh!: Promise<boolean>
+  refresh = (async () => {
+    const modules = await fetchOpenCodeRouteModules(cache.assets, fetchImpl)
+    if (!modules.some(Boolean)) return false
+    cache.modules = modules
+    return true
+  })().finally(() => {
+    if (cache.refreshing === refresh) cache.refreshing = null
+  })
+  cache.refreshing = refresh
+  return refresh
+}
+
+export function clearOpenCodeRouteModuleCache() {
+  routeModuleCache = null
+}
+
+export async function refreshOpenCodeRouteModuleCache(
+  fetchImpl: typeof fetch = fetch
+) {
+  const cache = routeModuleCache
+  if (!cache) return false
+  return refreshRouteModuleCache(cache, fetchImpl)
 }
 
 export async function discoverReferralApplyServerId(
@@ -246,7 +318,7 @@ export async function applyOpenCodeReferralReward(
   fetchImpl: typeof fetch = fetch
 ): Promise<void> {
   const cookie = buildAuthCookie(authCookie)
-  const response = await fetchImpl(`${BASE}/_server`, {
+  const response = await fetchWithDeadline(fetchImpl, `${BASE}/_server`, {
     method: 'POST',
     headers: {
       accept: '*/*',
@@ -291,7 +363,7 @@ export async function cancelOpenCodeSubscriptionRenewal(
 ): Promise<SubscriptionCancellationResult> {
   const cookie = buildAuthCookie(authCookie)
   const returnUrl = `${BASE}/workspace/${workspaceId}/go`
-  const portalResponse = await fetchImpl(`${BASE}/_server`, {
+  const portalResponse = await fetchWithDeadline(fetchImpl, `${BASE}/_server`, {
     method: 'POST',
     headers: {
       accept: '*/*',
@@ -310,7 +382,7 @@ export async function cancelOpenCodeSubscriptionRenewal(
     throw new Error(`Failed to create billing portal session (status ${portalResponse.status})`)
   }
 
-  const portalPage = await fetchImpl(portalUrl, {
+  const portalPage = await fetchWithDeadline(fetchImpl, portalUrl, {
     headers: { accept: 'text/html', 'user-agent': UA }
   })
   if (!portalPage.ok) {
@@ -333,7 +405,7 @@ export async function cancelOpenCodeSubscriptionRenewal(
   let stripeVersion = '2026-06-24.dahlia'
   const subscriptionUrl = `https://billing.stripe.com/v1/billing_portal/sessions/${preload.portal_session_id}/subscriptions/${subscriptionId}`
   const stripeRequest = async (url: string, init: RequestInit = {}) => {
-    const response = await fetchImpl(url, {
+    const response = await fetchWithDeadline(fetchImpl, url, {
       ...init,
       headers: {
         accept: 'application/json',
@@ -350,7 +422,7 @@ export async function cancelOpenCodeSubscriptionRenewal(
       const suggested = body?.error?.message?.match(/\d{4}-\d{2}-\d{2}\.[a-z]+/i)?.[0]
       if (suggested && suggested !== stripeVersion) {
         stripeVersion = suggested
-        return fetchImpl(url, {
+        return fetchWithDeadline(fetchImpl, url, {
           ...init,
           headers: {
             accept: 'application/json',
@@ -403,7 +475,7 @@ export async function cancelOpenCodeSubscriptionRenewal(
 }
 
 async function resolveWorkspaceId(cookie: string, fetchImpl: typeof fetch): Promise<string> {
-  const authRes = await fetchImpl(`${BASE}/auth`, {
+  const authRes = await fetchWithDeadline(fetchImpl, `${BASE}/auth`, {
     method: 'GET',
     redirect: 'manual',
     headers: commonHeaders(cookie)
@@ -438,7 +510,7 @@ async function loadWorkspace(
   workspaceId: string,
   fetchImpl: typeof fetch
 ): Promise<OpenCodeAccountInfo> {
-  const goRes = await fetchImpl(`${BASE}/workspace/${workspaceId}/go`, {
+  const goRes = await fetchWithDeadline(fetchImpl, `${BASE}/workspace/${workspaceId}/go`, {
     method: 'GET',
     redirect: 'follow',
     headers: commonHeaders(cookie)
@@ -493,11 +565,7 @@ export async function fetchOpenCodeAccount(
   const cachedId = cachedWorkspaceId?.trim()
 
   if (cachedId) {
-    try {
-      return await loadWorkspace(cookie, cachedId, fetchImpl)
-    } catch {
-      // Resolve once through /auth below and replace the stale cache.
-    }
+    return loadWorkspace(cookie, cachedId, fetchImpl)
   }
 
   const workspaceId = await resolveWorkspaceId(cookie, fetchImpl)
@@ -510,7 +578,7 @@ export async function fetchOpenCodeApiKey(
   fetchImpl: typeof fetch = fetch
 ): Promise<string | null> {
   const cookie = buildAuthCookie(authCookie)
-  const response = await fetchImpl(`${BASE}/workspace/${workspaceId}/keys`, {
+  const response = await fetchWithDeadline(fetchImpl, `${BASE}/workspace/${workspaceId}/keys`, {
     method: 'GET',
     redirect: 'follow',
     headers: commonHeaders(cookie)

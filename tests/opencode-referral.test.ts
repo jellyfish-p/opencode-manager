@@ -1,14 +1,20 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   applyOpenCodeReferralReward,
   cancelOpenCodeSubscriptionRenewal,
+  clearOpenCodeRouteModuleCache,
   discoverBillingPortalServerId,
   discoverReferralApplyServerId,
   parseOpenCodeHydration,
+  refreshOpenCodeRouteModuleCache,
   serializeOpenCodeServerArgs
 } from '../server/utils/opencode'
 
 describe('OpenCode referral rewards', () => {
+  beforeEach(() => {
+    clearOpenCodeRouteModuleCache()
+  })
+
   test('parses only available rewards from SSR hydration', () => {
     const html = `
       referralCode:"HMVSC7SZVQ",hasReferral:!0,rewards:$R[1]=[
@@ -42,6 +48,79 @@ describe('OpenCode referral rewards', () => {
       const applyGoReferralReward = action(applyGoReferralReward_action, "go.referral.reward.apply");
     `)) as typeof fetch
 
+    expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(applyId)
+  })
+
+  test('checks the route action bundle before unrelated module preloads', async () => {
+    const applyId = 'a'.repeat(64)
+    const calls: string[] = []
+    const html = `
+      <link href="/_build/assets/runtime.js" rel="modulepreload">
+      <link href="/_build/assets/action-route.js" rel="modulepreload">
+    `
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input)
+      calls.push(url)
+      return new Response(
+        url.endsWith('/action-route.js')
+          ? `createServerReference("${applyId}");"go.referral.reward.apply"`
+          : 'const runtime = true'
+      )
+    }) as typeof fetch
+
+    expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(applyId)
+    expect(calls).toEqual(['https://opencode.ai/_build/assets/action-route.js'])
+  })
+
+  test('shares the cached route module across accounts', async () => {
+    const applyId = 'c'.repeat(64)
+    const html = '<link href="/_build/assets/shared-action.js" rel="modulepreload">'
+    let fetches = 0
+    const fakeFetch = (async () => {
+      fetches++
+      return new Response(
+        `createServerReference("${applyId}");"go.referral.reward.apply"`
+      )
+    }) as typeof fetch
+
+    expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(applyId)
+    expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(applyId)
+    expect(fetches).toBe(1)
+  })
+
+  test('periodically refreshes the shared route module cache', async () => {
+    const firstId = 'd'.repeat(64)
+    const refreshedId = 'e'.repeat(64)
+    const html = '<link href="/_build/assets/refreshable-action.js" rel="modulepreload">'
+    let fetches = 0
+    const fakeFetch = (async () => {
+      fetches++
+      const id = fetches === 1 ? firstId : refreshedId
+      return new Response(
+        `createServerReference("${id}");"go.referral.reward.apply"`
+      )
+    }) as typeof fetch
+
+    expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(firstId)
+    expect(await refreshOpenCodeRouteModuleCache(fakeFetch)).toBe(true)
+    expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(refreshedId)
+    expect(fetches).toBe(2)
+  })
+
+  test('keeps the last successful modules when a scheduled refresh fails', async () => {
+    const applyId = 'f'.repeat(64)
+    const html = '<link href="/_build/assets/resilient-action.js" rel="modulepreload">'
+    let fail = false
+    const fakeFetch = (async () => {
+      if (fail) throw new Error('temporary module outage')
+      return new Response(
+        `createServerReference("${applyId}");"go.referral.reward.apply"`
+      )
+    }) as typeof fetch
+
+    expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(applyId)
+    fail = true
+    expect(await refreshOpenCodeRouteModuleCache(fakeFetch)).toBe(false)
     expect(await discoverReferralApplyServerId(html, fakeFetch)).toBe(applyId)
   })
 

@@ -8,7 +8,8 @@
 
 - 首次刷新时通过 `/auth` 获取 workspace ID，并通过现有账号更新流程保存到数据库。
 - 后续刷新优先使用数据库中的 `workspace_id` 直接加载 workspace 页面。
-- 缓存失效时自动重新请求 `/auth`，用最新 ID 重试并覆盖数据库中的旧值。
+- 已有 workspace ID 的刷新失败时直接返回错误，不再自动回退到 `/auth` 重定向链。
+- 所有 OpenCode 上游请求必须设置硬超时，避免账号操作队列永久等待。
 - 不修改数据库结构。
 
 ## 数据流
@@ -19,11 +20,9 @@
 
 1. 请求 `/workspace/{cachedWorkspaceId}/go`。
 2. 如果请求成功且页面包含可解析的账号数据，返回结果，并保留该 workspace ID。
-3. 如果请求失败、最终 URL 已跳出 workspace 路径，或页面无法解析账号数据，则将缓存判定为失效。
-4. 请求 `/auth` 获取最新 workspace ID。
-5. 用最新 ID 重新请求 workspace 页面；本次刷新最多执行一次缓存回退。
+3. 如果请求失败、超时、最终 URL 已跳出 workspace 路径，或页面无法解析账号数据，则直接结束本次刷新并记录错误，不再请求 `/auth`。
 
-当不存在缓存 ID 时，直接从第 4 步开始。
+当不存在缓存 ID 时，首次刷新才通过 `/auth` 获取 workspace ID，然后加载 workspace 页面并持久化该 ID。
 
 `refreshAccount` 继续使用现有 `updateAccount` 调用保存 `info.workspaceId`。因此首次得到的 ID 会写入数据库，缓存失效后得到的新 ID 也会覆盖旧值。
 
@@ -45,7 +44,9 @@ workspace 页面同时满足以下条件才算成功：
 
 不能先把缓存 ID 写入解析结果再判断页面是否有效，否则登录页也可能因为人工补入的 ID 被误判为成功。
 
-重新解析出的 workspace 页面仍失败时，保留现有错误处理：账号状态更新为 `error`，并把不含 Cookie 的错误信息写入 `last_error`。
+workspace 页面失败时，保留现有错误处理：账号状态更新为 `error`，并把不含 Cookie 的错误信息写入 `last_error`。
+
+刷新页面包含推荐奖励或订阅信息时，只从 modulepreload 列表尾部开始查找实际包含服务端动作 ID 的路由模块，命中后停止；不再并发下载全部前端模块。路由模块缓存由所有账号共享，每 15 分钟后台刷新一次；刷新失败时继续使用上一次成功结果。已有上游 API Key 时也不重复请求 `/keys`。
 
 ## 兼容性与安全
 
@@ -60,8 +61,8 @@ workspace 页面同时满足以下条件才算成功：
 
 1. 无缓存时请求 `/auth`，解析 ID 并返回该 ID，供现有持久化流程保存。
 2. 有有效缓存时只请求 workspace 页面，不请求 `/auth`。
-3. 缓存页面跳转到登录路径或无法解析时，请求 `/auth` 并用最新 ID 重试。
-4. 回退成功时返回最新 workspace ID，使 `refreshAccount` 覆盖数据库旧值。
-5. 回退后的 workspace 页面仍失败时抛出不含凭据的明确错误。
+3. 缓存页面跳转到登录路径或无法解析时直接失败，并确认没有请求 `/auth`。
+4. workspace 与 API Key 请求都携带中止期限。
+5. 路由动作模块命中后停止扫描无关 modulepreload。
 
 最后运行新增单元测试、现有 Cookie 测试、SSR 鉴权回归测试和 Nuxt 生产构建。
