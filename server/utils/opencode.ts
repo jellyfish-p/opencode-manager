@@ -6,10 +6,16 @@ export interface UsageBucket {
   usagePercent: number
 }
 
+export interface OpenCodeWorkspace {
+  id: string
+  name: string | null
+}
+
 export interface OpenCodeAccountInfo {
   email: string | null
   workspaceId: string | null
   workspaceName: string | null
+  workspaces: OpenCodeWorkspace[]
   balance: number | null
   rollingUsage: number | null
   rollingResetSec: number | null
@@ -102,11 +108,15 @@ function extractWorkspaceId(location: string | null): string | null {
   }
 }
 
-export function parseOpenCodeHydration(html: string): OpenCodeAccountInfo {
+export function parseOpenCodeHydration(
+  html: string,
+  currentWorkspaceId?: string | null
+): OpenCodeAccountInfo {
   const result: OpenCodeAccountInfo = {
     email: null,
     workspaceId: null,
     workspaceName: null,
+    workspaces: [],
     balance: null,
     rollingUsage: null,
     rollingResetSec: null,
@@ -126,12 +136,23 @@ export function parseOpenCodeHydration(html: string): OpenCodeAccountInfo {
   const emailMatch = html.match(/\$R\[28\]\(\$R\[\d+\],\s*"([^"]+@[^"]+)"\)/)
   if (emailMatch) result.email = emailMatch[1] || null
 
-  const workspaceMatch = html.match(
-    /id:\s*"((?:wrk_)[A-Z0-9]+)"\s*,\s*name:\s*"([^"]*)"/i
-  )
-  if (workspaceMatch) {
-    result.workspaceId = workspaceMatch[1] || null
-    result.workspaceName = workspaceMatch[2] || null
+  const workspaces = new Map<string, OpenCodeWorkspace>()
+  for (const match of html.matchAll(
+    /id:\s*"((?:wrk_)[A-Z0-9]+)"\s*,\s*name:\s*"([^"]*)"/gi
+  )) {
+    const id = match[1]
+    if (id && !workspaces.has(id)) {
+      workspaces.set(id, { id, name: match[2] || null })
+    }
+  }
+  result.workspaces = [...workspaces.values()]
+
+  const selectedWorkspace = currentWorkspaceId
+    ? workspaces.get(currentWorkspaceId)
+    : result.workspaces[0]
+  if (selectedWorkspace) {
+    result.workspaceId = selectedWorkspace.id
+    result.workspaceName = selectedWorkspace.name
   }
 
   const balanceMatch = html.match(/balance:\s*(-?\d+(?:\.\d+)?)/)
@@ -536,20 +557,21 @@ async function loadWorkspace(
     // An empty or invalid final URL is not a valid workspace response.
   }
 
-  if (!finalPath.startsWith('/workspace/')) {
+  const finalWorkspaceId = extractWorkspaceId(goRes.url)
+  if (!finalPath.startsWith('/workspace/') || !finalWorkspaceId) {
     throw new Error(
       `Workspace page redirected outside workspace (path: ${finalPath || 'unknown'})`
     )
   }
 
   const html = await goRes.text()
-  const info = parseOpenCodeHydration(html)
+  const info = parseOpenCodeHydration(html, finalWorkspaceId)
 
   if (!info.email && !info.workspaceId) {
     throw new Error('Unable to parse account data from SSR page')
   }
 
-  info.workspaceId = info.workspaceId || workspaceId
+  info.workspaceId = finalWorkspaceId
   if (info.availableReferralRewardIds.length || info.liteSubscriptionId) {
     const [referralServerId, billingServerId] = await Promise.all([
       info.availableReferralRewardIds.length
@@ -579,6 +601,30 @@ export async function fetchOpenCodeAccount(
 
   const workspaceId = await resolveWorkspaceId(cookie, fetchImpl)
   return loadWorkspace(cookie, workspaceId, fetchImpl)
+}
+
+export async function fetchOpenCodeAccounts(
+  authCookie: string,
+  cachedWorkspaceId?: string | null,
+  fetchImpl: typeof fetch = fetch
+): Promise<OpenCodeAccountInfo[]> {
+  const cookie = buildAuthCookie(authCookie)
+  const workspaceId = cachedWorkspaceId?.trim() || await resolveWorkspaceId(cookie, fetchImpl)
+  const primary = await loadWorkspace(cookie, workspaceId, fetchImpl)
+  const workspaceIds = [
+    ...new Set([
+      primary.workspaceId,
+      ...primary.workspaces.map(workspace => workspace.id)
+    ].filter((id): id is string => Boolean(id)))
+  ]
+  const infos = [primary]
+
+  for (const id of workspaceIds) {
+    if (id === primary.workspaceId) continue
+    infos.push(await loadWorkspace(cookie, id, fetchImpl))
+  }
+
+  return infos
 }
 
 export async function fetchOpenCodeApiKey(

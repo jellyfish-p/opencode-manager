@@ -20,8 +20,9 @@ export default defineEventHandler(async (event) => {
   const assignedAccount = getAccount(account.id)!
 
   if (body.refresh !== false) {
-    const refreshed = await refreshAccount(assignedAccount.id)
-    return toPublicAccount(refreshed)
+    const expanded = await expandAccountWorkspacesByIds([assignedAccount.id])
+    const refreshed = await refreshAccountsByIds(expanded.map(item => item.id))
+    return toPublicAccount(refreshed[0]!)
   }
 
   updateAccountPollSchedule(assignedAccount)

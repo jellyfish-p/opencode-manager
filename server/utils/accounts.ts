@@ -118,6 +118,53 @@ async function mapConcurrent<T, R>(items: T[], limit: number, callback: (item: T
   return results
 }
 
+async function expandAccountWorkspaces(id: number): Promise<Account[]> {
+  const account = ensureAccountIpAssignment(id)
+  if (!account) return []
+
+  try {
+    const infos = await fetchOpenCodeAccounts(
+      account.auth_cookie,
+      account.workspace_id,
+      createAccountFetch(account)
+    )
+    const workspaceInfos = infos.filter(
+      (info): info is OpenCodeAccountInfo & { workspaceId: string } => Boolean(info.workspaceId)
+    )
+    if (!workspaceInfos.length) return [account]
+
+    const primary = workspaceInfos[0]!
+    const additional = workspaceInfos.slice(1)
+    const expanded = [
+      updateAccount(account.id, {
+        workspace_id: primary.workspaceId,
+        workspace_name: primary.workspaceName
+      })!
+    ]
+
+    for (const info of additional) {
+      const created = createAccount({
+        name: account.name || undefined,
+        auth_cookie: account.auth_cookie
+      })
+      expanded.push(updateAccount(created.id, {
+        workspace_id: info.workspaceId,
+        workspace_name: info.workspaceName
+      })!)
+    }
+    return expanded
+  } catch {
+    // Keep the original pending account so the normal refresh path records the upstream error.
+    return [account]
+  }
+}
+
+export async function expandAccountWorkspacesByIds(ids: number[]) {
+  const expanded = await mapConcurrent(ids, REFRESH_CONCURRENCY, expandAccountWorkspaces)
+  ensureStableIpAssignments()
+  return expanded.flat().map(account => getAccount(account.id) || account)
+}
+
 function quotaFromInfo(info: Awaited<ReturnType<typeof fetchOpenCodeAccount>>, now: Date) {
   const rollingResetAt = resetAtFromSeconds(info.rollingResetSec, now)
   const weeklyResetAt = resetAtFromSeconds(info.weeklyResetSec, now)

@@ -1,5 +1,9 @@
 import { afterEach, expect, test } from 'bun:test'
-import { fetchOpenCodeAccount, fetchOpenCodeApiKey } from '../server/utils/opencode'
+import {
+  fetchOpenCodeAccount,
+  fetchOpenCodeAccounts,
+  fetchOpenCodeApiKey
+} from '../server/utils/opencode'
 
 const originalFetch = globalThis.fetch
 
@@ -28,6 +32,23 @@ function installFetch(responses: Response[]) {
 
 function hydration(workspaceId: string, name: string) {
   return `<script>id: "${workspaceId}", name: "${name}"</script>`
+}
+
+function multiWorkspaceHydration(
+  currentWorkspaceId: string,
+  subscriptionId = 'sub_SECOND'
+) {
+  return `
+    <script>
+      _$HY.r["session.get[\\"${currentWorkspaceId}\\"]"] = {};
+      _$HY.r["lite.subscription.get[\\"${currentWorkspaceId}\\"]"] = {};
+      $R[1] = [
+        { id: "wrk_FIRST123", name: "First", slug: null },
+        { id: "wrk_SECOND456", name: "Second", slug: null }
+      ];
+      $R[2] = { liteSubscriptionID: "${subscriptionId}" };
+    </script>
+  `
 }
 
 test('loads a valid cached workspace without requesting auth', async () => {
@@ -130,4 +151,59 @@ test('puts an abort deadline on the API key request', async () => {
 
   await expect(fetchOpenCodeApiKey('token', 'wrk_CACHED123'))
     .resolves.toBe('sk-example')
+})
+
+test('keeps the requested workspace when hydration lists another workspace first', async () => {
+  installFetch([
+    response(
+      'https://opencode.ai/workspace/wrk_SECOND456/go',
+      multiWorkspaceHydration('wrk_SECOND456')
+    )
+  ])
+
+  const info = await fetchOpenCodeAccount('token', 'wrk_SECOND456')
+
+  expect(info.workspaceId).toBe('wrk_SECOND456')
+  expect(info.workspaceName).toBe('Second')
+})
+
+test('loads every workspace exposed by one auth cookie', async () => {
+  const calls = installFetch([
+    response('https://opencode.ai/auth', '', {
+      status: 302,
+      headers: { location: '/workspace/wrk_FIRST123' }
+    }),
+    response(
+      'https://opencode.ai/workspace/wrk_FIRST123/go',
+      multiWorkspaceHydration('wrk_FIRST123', 'sub_FIRST')
+    ),
+    response(
+      'https://opencode.ai/workspace/wrk_SECOND456/go',
+      multiWorkspaceHydration('wrk_SECOND456', 'sub_SECOND')
+    )
+  ])
+
+  const infos = await fetchOpenCodeAccounts('token')
+
+  expect(infos.map(info => ({
+    workspaceId: info.workspaceId,
+    workspaceName: info.workspaceName,
+    subscriptionId: info.liteSubscriptionId
+  }))).toEqual([
+    {
+      workspaceId: 'wrk_FIRST123',
+      workspaceName: 'First',
+      subscriptionId: 'sub_FIRST'
+    },
+    {
+      workspaceId: 'wrk_SECOND456',
+      workspaceName: 'Second',
+      subscriptionId: 'sub_SECOND'
+    }
+  ])
+  expect(calls).toEqual([
+    'https://opencode.ai/auth',
+    'https://opencode.ai/workspace/wrk_FIRST123/go',
+    'https://opencode.ai/workspace/wrk_SECOND456/go'
+  ])
 })
