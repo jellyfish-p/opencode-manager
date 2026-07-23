@@ -64,6 +64,47 @@ export interface ReferralRewardList {
   refreshedAt: string | null
 }
 
+export interface AccountRefreshProgress {
+  accountId: number
+  status: 'running' | 'complete' | 'error'
+  phase:
+    | 'queued'
+    | 'workspace'
+    | 'referral'
+    | 'subscription'
+    | 'api-key'
+    | 'finalizing'
+    | 'complete'
+  label: string
+  step: number
+  totalSteps: number
+  percent: number
+  startedAt: string
+  updatedAt: string
+  error: string | null
+}
+
+export interface AccountImportProgress {
+  operationId: string
+  status: 'running' | 'complete' | 'error'
+  phase:
+    | 'validating'
+    | 'creating'
+    | 'workspaces'
+    | 'refreshing'
+    | 'finalizing'
+    | 'complete'
+  label: string
+  step: number
+  totalSteps: number
+  percent: number
+  accountTotal: number
+  accounts: AccountRefreshProgress[]
+  startedAt: string
+  updatedAt: string
+  error: string | null
+}
+
 export interface RiskControlCheckResult {
   account: Account
   blocked: boolean
@@ -90,6 +131,7 @@ export interface AccountBatchProgress {
   succeeded: number
   failed: number
   skipped: number
+  active: AccountRefreshProgress[]
 }
 
 export interface AccountBatchResult extends AccountBatchProgress {
@@ -117,23 +159,53 @@ export function useAccounts() {
     stats.value = await requestFetch<Stats>('/api/stats')
   }
 
-  async function addAccounts(payload: { name?: string; auth_cookie_values: string }) {
-    const result = await requestFetch<{
+  async function addAccounts(
+    payload: { name?: string; auth_cookie_values: string },
+    onProgress?: (progress: AccountImportProgress) => void
+  ) {
+    const operationId = globalThis.crypto?.randomUUID?.() ||
+      `import-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    let polling = Boolean(onProgress)
+
+    async function pollProgress() {
+      while (polling) {
+        try {
+          const result = await requestFetch<{ progress: AccountImportProgress | null }>(
+            `/api/accounts/import-progress?operationId=${encodeURIComponent(operationId)}`,
+            { signal: AbortSignal.timeout(5_000) }
+          )
+          if (result.progress) onProgress?.(result.progress)
+        } catch {
+          // The import request remains authoritative if a progress poll is interrupted.
+        }
+        if (polling) await new Promise(resolve => setTimeout(resolve, 400))
+      }
+    }
+
+    const importRequest = requestFetch<{
       created: number
       synchronized: number
       failed: number
       accounts: Account[]
     }>('/api/accounts/batch', {
       method: 'POST',
-      body: payload
+      body: { ...payload, operation_id: operationId }
     })
-    const createdIds = new Set(result.accounts.map(account => account.id))
-    accounts.value = [
-      ...result.accounts,
-      ...accounts.value.filter(account => !createdIds.has(account.id))
-    ].sort((a, b) => b.id - a.id)
-    void Promise.allSettled([fetchAccounts(), fetchStats()])
-    return result
+    const progressPolling = onProgress ? pollProgress() : Promise.resolve()
+
+    try {
+      const result = await importRequest
+      const createdIds = new Set(result.accounts.map(account => account.id))
+      accounts.value = [
+        ...result.accounts,
+        ...accounts.value.filter(account => !createdIds.has(account.id))
+      ].sort((a, b) => b.id - a.id)
+      void Promise.allSettled([fetchAccounts(), fetchStats()])
+      return result
+    } finally {
+      polling = false
+      await progressPolling
+    }
   }
 
   async function updateAccount(id: number, payload: Partial<{ name: string; auth_cookie: string; status: Account['status'] }>) {
@@ -171,10 +243,44 @@ export function useAccounts() {
     return result
   }
 
-  async function refreshAccount(id: number) {
-    const account = await requestFetch<Account>(`/api/accounts/${id}/refresh`, { method: 'POST' })
-    await Promise.all([fetchAccounts(), fetchStats()])
-    return account
+  async function refreshAccount(
+    id: number,
+    onProgress?: (progress: AccountRefreshProgress) => void,
+    refreshLists = true
+  ) {
+    let polling = Boolean(onProgress)
+
+    async function pollProgress() {
+      while (polling) {
+        try {
+          const result = await requestFetch<{ progress: AccountRefreshProgress | null }>(
+            `/api/accounts/${id}/refresh-progress`,
+            { signal: AbortSignal.timeout(5_000) }
+          )
+          if (result.progress) {
+            onProgress?.(result.progress)
+          }
+        } catch {
+          // The refresh request remains authoritative if a progress poll is interrupted.
+        }
+        if (polling) await new Promise(resolve => setTimeout(resolve, 400))
+      }
+    }
+
+    const refreshRequest = requestFetch<Account>(
+      `/api/accounts/${id}/refresh`,
+      { method: 'POST' }
+    )
+    const progressPolling = onProgress ? pollProgress() : Promise.resolve()
+
+    try {
+      const account = await refreshRequest
+      if (refreshLists) await Promise.all([fetchAccounts(), fetchStats()])
+      return account
+    } finally {
+      polling = false
+      await progressPolling
+    }
   }
 
   async function fetchReferralRewards(id: number) {
@@ -267,12 +373,18 @@ export function useAccounts() {
       total: eligibleAccounts.length,
       succeeded: 0,
       failed: 0,
-      skipped: uniqueIds.length - eligibleAccounts.length
+      skipped: uniqueIds.length - eligibleAccounts.length,
+      active: []
     }
+    const activeProgress = new Map<number, AccountRefreshProgress>()
     const updatedAccounts: Account[] = []
     let blocked = 0
     let cursor = 0
-    onProgress?.({ ...progress })
+    const emitProgress = () => {
+      progress.active = [...activeProgress.values()]
+      onProgress?.({ ...progress, active: [...progress.active] })
+    }
+    emitProgress()
 
     async function execute(account: Account) {
       if (action === 'delete') {
@@ -302,9 +414,13 @@ export function useAccounts() {
           body: { status: 'pending' }
         })
       }
-      const updated = await requestFetch<Account>(
-        `/api/accounts/${account.id}/refresh`,
-        { method: 'POST' }
+      const updated = await refreshAccount(
+        account.id,
+        accountProgress => {
+          activeProgress.set(account.id, accountProgress)
+          emitProgress()
+        },
+        false
       )
       updatedAccounts.push(updated)
       if (updated.status === 'error') throw new Error(updated.last_error || 'Account refresh failed')
@@ -319,8 +435,9 @@ export function useAccounts() {
         } catch {
           progress.failed++
         } finally {
+          activeProgress.delete(account.id)
           progress.completed++
-          onProgress?.({ ...progress })
+          emitProgress()
         }
       }
     }

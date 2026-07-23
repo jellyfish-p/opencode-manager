@@ -2,6 +2,11 @@ import type { Account, AccountStatus } from './db'
 import { resolveRefreshedAccountEmail } from './account-identity'
 import { AccountOperationQueue } from './account-operation-queue'
 import { AccountPollSchedule } from './account-polling'
+import {
+  beginAccountRefreshProgress,
+  clearAccountRefreshProgress,
+  type AccountRefreshProgressReporter
+} from './account-refresh-progress'
 import { validateAuthCookieValue } from './auth-cookie'
 import type { OpenCodeAccountInfo } from './opencode'
 import { createAccountFetch } from './account-fetch'
@@ -42,6 +47,7 @@ export function removeAccountPollSchedule(id: number) {
   ensureAccountPollSchedule()
   accountPollSchedule.remove(id)
   removeCachedReferralRewards(id)
+  clearAccountRefreshProgress(id)
 }
 
 export function rebuildAccountPollSchedule() {
@@ -183,6 +189,7 @@ function quotaFromInfo(info: Awaited<ReturnType<typeof fetchOpenCodeAccount>>, n
 interface RefreshAccountOptions {
   skipReferralRewards?: boolean
   throwOnError?: boolean
+  progress?: AccountRefreshProgressReporter
 }
 
 function cacheReferralRewards(accountId: number, info: OpenCodeAccountInfo) {
@@ -198,10 +205,20 @@ export function refreshAccount(id: number): Promise<Account> {
   const pending = accountRefreshes.get(id)
   if (pending) return pending
 
-  const refresh = accountOperations.run(id, () => refreshAccountOnce(id, {}))
+  const progress = beginAccountRefreshProgress(id)
+  const refresh = accountOperations.run(id, () => refreshAccountOnce(id, { progress }))
     .then(account => {
+      if (account.status === 'error') {
+        progress.fail(account.last_error || '账号刷新失败')
+      } else {
+        progress.complete()
+      }
       updateAccountPollSchedule(account)
       return account
+    })
+    .catch(error => {
+      progress.fail(error instanceof Error ? error.message : String(error))
+      throw error
     })
     .finally(() => {
       if (accountRefreshes.get(id) === refresh) accountRefreshes.delete(id)
@@ -218,8 +235,10 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
   const fetchImpl = createAccountFetch(account)
 
   try {
+    options.progress?.update('workspace', '正在加载 workspace 与订阅页面')
     let info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
     cacheReferralRewards(id, info)
+    options.progress?.update('referral', '正在检查推广额度')
     let referralError: string | null = null
     const attemptedRewards = new Set<string>()
 
@@ -240,6 +259,10 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
       }
 
       attemptedRewards.add(referralId)
+      options.progress?.update(
+        'referral',
+        `正在使用推广额度（${attemptedRewards.size}/20）`
+      )
       try {
         await applyOpenCodeReferralReward(
           account.auth_cookie,
@@ -267,6 +290,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     }
 
     const workspaceId = info.workspaceId || account.workspace_id
+    options.progress?.update('subscription', '正在检查订阅与自动续费')
     const subscriptionUpdate: Partial<Account> = {}
     if (info.subscriptionStatus === 'active' && info.liteSubscriptionId && workspaceId) {
       const checkedAt = account.subscription_cancel_checked_at
@@ -311,6 +335,10 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
     }
 
     let upstreamApiKey = account.upstream_api_key
+    options.progress?.update(
+      'api-key',
+      upstreamApiKey ? '正在验证已缓存的 API Key' : '正在获取 API Key'
+    )
     if (workspaceId && !upstreamApiKey) {
       try {
         upstreamApiKey = await fetchOpenCodeApiKey(account.auth_cookie, workspaceId, fetchImpl) || upstreamApiKey
@@ -318,6 +346,7 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
         // Quota and membership refresh must still succeed if the keys page is temporarily unavailable.
       }
     }
+    options.progress?.update('finalizing', '正在计算额度并保存账号状态')
     const now = new Date()
     const { rollingResetAt, weeklyResetAt, monthlyResetAt, quota } = quotaFromInfo(info, now)
     const isMember = info.subscriptionStatus === 'active'

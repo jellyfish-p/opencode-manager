@@ -2,7 +2,9 @@
 import type {
   Account,
   AccountBatchAction,
-  AccountBatchProgress
+  AccountBatchProgress,
+  AccountImportProgress,
+  AccountRefreshProgress
 } from '~/composables/useAccounts'
 
 type DeleteIntent =
@@ -41,6 +43,7 @@ const initialEditCookie = ref('')
 const editCookieRequestGeneration = ref(0)
 const actionAccount = ref<Account | null>(null)
 const submitting = ref(false)
+const importProgress = ref<AccountImportProgress | null>(null)
 const accountAction = ref<'referral' | 'cancel-renewal' | null>(null)
 const referralRewardIds = ref<string[]>([])
 const usedReferralRewardIds = ref<string[]>([])
@@ -58,6 +61,7 @@ const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>
 const selectedAccountIds = ref<number[]>([])
 const bulkAction = ref<AccountBatchAction | null>(null)
 const batchProgress = ref<(AccountBatchProgress & { label: string }) | null>(null)
+const singleRefreshProgress = ref<AccountRefreshProgress | null>(null)
 const deleteIntent = ref<DeleteIntent | null>(null)
 const deleteDialogOpen = ref(false)
 const deleteConfirmLoading = ref(false)
@@ -83,6 +87,11 @@ const nonMemberCount = computed(() =>
 const riskControlledCount = computed(() =>
   accounts.value.filter(account => account.disabled_reason === 'risk_control').length
 )
+
+function accountDisplayLabel(id: number) {
+  const account = accounts.value.find(item => item.id === id)
+  return account?.name || account?.email || account?.workspace_name || `账号 #${id}`
+}
 const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
 const allFilteredSelected = computed(() =>
   filteredAccounts.value.length > 0 &&
@@ -303,10 +312,13 @@ async function onAdd() {
     return
   }
   submitting.value = true
+  importProgress.value = null
   try {
     const result = await addAccounts({
       name: formName.value || undefined,
       auth_cookie_values: formCookie.value
+    }, progress => {
+      importProgress.value = progress
     })
     toast.add({
       title: result.failed
@@ -321,6 +333,7 @@ async function onAdd() {
     toast.add({ title: e?.data?.statusMessage || e?.message || '添加失败', color: 'error' })
   } finally {
     submitting.value = false
+    importProgress.value = null
   }
 }
 
@@ -345,8 +358,11 @@ async function onEdit() {
 
 async function onRefresh(id: number) {
   actionId.value = id
+  singleRefreshProgress.value = null
   try {
-    const account = await refreshAccount(id)
+    const account = await refreshAccount(id, progress => {
+      singleRefreshProgress.value = progress
+    })
     if (account.status === 'error') {
       toast.add({ title: account.last_error || '同步失败', color: 'error' })
     } else {
@@ -356,20 +372,27 @@ async function onRefresh(id: number) {
     toast.add({ title: e?.data?.statusMessage || '同步失败', color: 'error' })
   } finally {
     actionId.value = null
+    singleRefreshProgress.value = null
   }
 }
 
 async function onToggle(account: Account) {
   actionId.value = account.id
+  singleRefreshProgress.value = null
   try {
     const next = account.status === 'disabled' ? 'pending' : 'disabled'
     await updateAccount(account.id, { status: next })
-    if (next === 'pending') await refreshAccount(account.id)
+    if (next === 'pending') {
+      await refreshAccount(account.id, progress => {
+        singleRefreshProgress.value = progress
+      })
+    }
     toast.add({ title: next === 'disabled' ? '已禁用' : '已启用并同步', color: 'success' })
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || '操作失败', color: 'error' })
   } finally {
     actionId.value = null
+    singleRefreshProgress.value = null
   }
 }
 
@@ -615,27 +638,63 @@ async function copyReferralLink(code: string) {
     </div>
 
     <div
-      v-if="batchProgress"
+      v-if="batchProgress || singleRefreshProgress"
       class="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
       aria-live="polite"
     >
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
         <div class="flex items-center gap-2">
           <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin text-primary" />
-          <span class="font-medium text-highlighted">{{ batchProgress.label }}</span>
+          <span class="font-medium text-highlighted">
+            {{
+              batchProgress?.label ||
+                (singleRefreshProgress
+                  ? `刷新 ${accountDisplayLabel(singleRefreshProgress.accountId)}`
+                  : '账号刷新')
+            }}
+          </span>
         </div>
-        <span class="text-muted">
+        <span v-if="batchProgress" class="text-muted">
           {{ batchProgress.completed }} / {{ batchProgress.total }}
           <template v-if="batchProgress.failed"> · 失败 {{ batchProgress.failed }}</template>
           <template v-if="batchProgress.skipped"> · 跳过 {{ batchProgress.skipped }}</template>
         </span>
+        <span v-else-if="singleRefreshProgress" class="text-muted">
+          {{ singleRefreshProgress.percent }}%
+        </span>
       </div>
       <UProgress
-        :model-value="batchProgress.completed"
-        :max="Math.max(batchProgress.total, 1)"
+        :model-value="batchProgress ? batchProgress.completed : singleRefreshProgress?.percent || 0"
+        :max="batchProgress ? Math.max(batchProgress.total, 1) : 100"
         color="primary"
         size="sm"
       />
+      <p v-if="singleRefreshProgress" class="mt-2 text-xs text-muted">
+        当前阶段：{{ singleRefreshProgress.label }}
+      </p>
+      <div v-if="batchProgress?.active.length" class="mt-3 grid gap-2 md:grid-cols-2">
+        <div
+          v-for="progress in batchProgress.active"
+          :key="progress.accountId"
+          class="rounded-md border border-default bg-default/70 px-3 py-2"
+        >
+          <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
+            <span class="min-w-0 truncate font-medium text-highlighted">
+              {{ accountDisplayLabel(progress.accountId) }}
+            </span>
+            <span class="shrink-0 text-muted">{{ progress.percent }}%</span>
+          </div>
+          <UProgress
+            :model-value="progress.percent"
+            :max="100"
+            color="primary"
+            size="xs"
+          />
+          <p class="mt-1.5 truncate text-xs text-muted" :title="progress.label">
+            {{ progress.label }}
+          </p>
+        </div>
+      </div>
     </div>
 
     <div class="flex flex-wrap items-center justify-between gap-3">
@@ -922,7 +981,7 @@ async function copyReferralLink(code: string) {
       </div>
     </UCard>
 
-    <UModal v-model:open="openAdd" title="添加账号">
+    <UModal v-model:open="openAdd" title="添加账号" :dismissible="!submitting">
       <template #body>
         <div class="space-y-4">
           <UFormField label="备注名称" name="name">
@@ -942,11 +1001,63 @@ async function copyReferralLink(code: string) {
             title="仅接收 auth 的 value"
             description="从 auth={value} 中只复制 value 部分；可按回车分隔批量添加。完整 Cookie、auth= 前缀和其他键值不会被兼容提取。"
           />
+          <div
+            v-if="importProgress"
+            class="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
+            aria-live="polite"
+          >
+            <div class="mb-2 flex items-center justify-between gap-3 text-sm">
+              <div class="flex min-w-0 items-center gap-2">
+                <UIcon
+                  name="i-lucide-loader-circle"
+                  class="size-4 shrink-0 animate-spin text-primary"
+                />
+                <span class="truncate font-medium text-highlighted">
+                  {{ importProgress.label }}
+                </span>
+              </div>
+              <span class="shrink-0 text-muted">{{ importProgress.percent }}%</span>
+            </div>
+            <UProgress
+              :model-value="importProgress.percent"
+              :max="100"
+              :color="importProgress.status === 'error' ? 'error' : 'primary'"
+              size="sm"
+            />
+            <p class="mt-2 text-xs text-muted">
+              已发现 {{ importProgress.accountTotal }} 个 workspace 账号
+            </p>
+            <div v-if="importProgress.accounts.length" class="mt-3 space-y-2">
+              <div
+                v-for="progress in importProgress.accounts"
+                :key="progress.accountId"
+                class="rounded-md border border-default bg-default/70 px-3 py-2"
+              >
+                <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
+                  <span class="font-medium text-highlighted">
+                    {{ accountDisplayLabel(progress.accountId) }}
+                  </span>
+                  <span class="shrink-0 text-muted">{{ progress.percent }}%</span>
+                </div>
+                <UProgress
+                  :model-value="progress.percent"
+                  :max="100"
+                  color="primary"
+                  size="xs"
+                />
+                <p class="mt-1.5 truncate text-xs text-muted" :title="progress.label">
+                  {{ progress.label }}
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       </template>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <UButton color="neutral" variant="ghost" @click="closeAddModal">取消</UButton>
+          <UButton color="neutral" variant="ghost" :disabled="submitting" @click="closeAddModal">
+            取消
+          </UButton>
           <UButton color="primary" :loading="submitting" @click="onAdd">批量添加并同步</UButton>
         </div>
       </template>

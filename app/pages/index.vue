@@ -1,7 +1,10 @@
 <script setup lang="ts">
-const { accounts, stats, loading, fetchAccounts, fetchStats, refreshAll } = useAccounts()
+import type { AccountBatchProgress } from '~/composables/useAccounts'
+
+const { accounts, stats, loading, fetchAccounts, fetchStats, runAccountBatch } = useAccounts()
 const toast = useToast()
 const refreshing = ref(false)
+const refreshProgress = ref<AccountBatchProgress | null>(null)
 
 await Promise.all([fetchAccounts(), fetchStats()])
 
@@ -14,15 +17,30 @@ const cards = computed(() => [
 
 const recent = computed(() => accounts.value.slice(0, 5))
 
+function accountDisplayLabel(id: number) {
+  const account = accounts.value.find(item => item.id === id)
+  return account?.name || account?.email || account?.workspace_name || `账号 #${id}`
+}
+
 async function onRefreshAll() {
   refreshing.value = true
   try {
-    await refreshAll()
-    toast.add({ title: '已刷新全部账号', color: 'success' })
+    const ids = accounts.value
+      .filter(account => account.disabled_reason !== 'manual')
+      .map(account => account.id)
+    const result = await runAccountBatch(ids, 'refresh', progress => {
+      refreshProgress.value = progress
+    })
+    toast.add({
+      title: `已刷新 ${result.succeeded} 个账号`,
+      description: result.failed ? `${result.failed} 个账号刷新失败` : undefined,
+      color: result.failed ? 'warning' : 'success'
+    })
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || '刷新失败', color: 'error' })
   } finally {
     refreshing.value = false
+    refreshProgress.value = null
   }
 }
 </script>
@@ -47,6 +65,47 @@ async function onRefreshAll() {
         >
           全部刷新
         </UButton>
+      </div>
+    </div>
+
+    <div
+      v-if="refreshProgress"
+      class="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
+      aria-live="polite"
+    >
+      <div class="mb-2 flex items-center justify-between gap-3 text-sm">
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin text-primary" />
+          <span class="font-medium text-highlighted">全部刷新</span>
+        </div>
+        <span class="text-muted">
+          {{ refreshProgress.completed }} / {{ refreshProgress.total }}
+          <template v-if="refreshProgress.failed"> · 失败 {{ refreshProgress.failed }}</template>
+        </span>
+      </div>
+      <UProgress
+        :model-value="refreshProgress.completed"
+        :max="Math.max(refreshProgress.total, 1)"
+        color="primary"
+        size="sm"
+      />
+      <div v-if="refreshProgress.active.length" class="mt-3 grid gap-2 md:grid-cols-2">
+        <div
+          v-for="progress in refreshProgress.active"
+          :key="progress.accountId"
+          class="rounded-md border border-default bg-default/70 px-3 py-2"
+        >
+          <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
+            <span class="min-w-0 truncate font-medium text-highlighted">
+              {{ accountDisplayLabel(progress.accountId) }}
+            </span>
+            <span class="shrink-0 text-muted">{{ progress.percent }}%</span>
+          </div>
+          <UProgress :model-value="progress.percent" :max="100" color="primary" size="xs" />
+          <p class="mt-1.5 truncate text-xs text-muted" :title="progress.label">
+            {{ progress.label }}
+          </p>
+        </div>
       </div>
     </div>
 
