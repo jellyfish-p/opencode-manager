@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test'
 import {
+  clearOpenCodeRouteModuleCache,
   fetchOpenCodeAccount,
   fetchOpenCodeAccounts,
   fetchOpenCodeApiKey
@@ -9,6 +10,7 @@ const originalFetch = globalThis.fetch
 
 afterEach(() => {
   globalThis.fetch = originalFetch
+  clearOpenCodeRouteModuleCache()
 })
 
 function response(url: string, body = '', init: ResponseInit = {}) {
@@ -86,6 +88,50 @@ test('puts an abort deadline on the workspace refresh request', async () => {
   expect(calls).toEqual([
     'https://opencode.ai/workspace/wrk_CACHED123/go'
   ])
+})
+
+test('does not stack route module delays while loading workspace subscription data', async () => {
+  let activeAssetRequests = 0
+  let maxActiveAssetRequests = 0
+  const stages: string[] = []
+
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input)
+    if (url.endsWith('/workspace/wrk_CACHED123/go')) {
+      return response(url, `
+        <link href="/_build/assets/runtime.js" rel="modulepreload">
+        <link href="/_build/assets/vendor.js" rel="modulepreload">
+        <link href="/_build/assets/go-route.js" rel="modulepreload">
+        <script>
+          id: "wrk_CACHED123", name: "Cached";
+          id: "ref_AVAILABLE2", source: "invitee", status: "available";
+          liteSubscriptionID: "sub_LITE";
+        </script>
+      `)
+    }
+    if (url.includes('/_build/assets/')) {
+      activeAssetRequests++
+      maxActiveAssetRequests = Math.max(maxActiveAssetRequests, activeAssetRequests)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 20))
+        return new Response('const unrelatedModule = true')
+      } finally {
+        activeAssetRequests--
+      }
+    }
+    throw new Error(`Unexpected fetch call: ${url}`)
+  }) as typeof fetch
+
+  const info = await fetchOpenCodeAccount(
+    'token',
+    'wrk_CACHED123',
+    globalThis.fetch,
+    stage => stages.push(stage)
+  )
+
+  expect(info.workspaceId).toBe('wrk_CACHED123')
+  expect(maxActiveAssetRequests).toBe(2)
+  expect(stages).toEqual(['workspace-page', 'route-modules'])
 })
 
 test('resolves a workspace through auth when no cache exists', async () => {

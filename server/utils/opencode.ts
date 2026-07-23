@@ -37,6 +37,8 @@ export interface SubscriptionCancellationResult {
   currentPeriodEnd: string | null
 }
 
+export type OpenCodeAccountLoadStage = 'workspace-page' | 'route-modules'
+
 export interface ReferralUsagePreviewItem {
   beforePercent: number
   afterPercent: number
@@ -262,23 +264,31 @@ async function fetchOpenCodeRouteModules(
   assets: string[],
   fetchImpl: typeof fetch
 ) {
-  const modules: string[] = []
-  for (const asset of [...assets].reverse()) {
+  const orderedAssets = [...assets].reverse()
+  const fetchModule = async (asset: string) => {
     try {
       const response = await fetchWithDeadline(fetchImpl, new URL(asset, BASE))
-      const source = response.ok ? await response.text() : ''
-      modules.push(source)
-      if (
-        /go\.referral\.reward\.apply/i.test(source) ||
-        /createSessionUrl_action/i.test(source)
-      ) {
-        break
-      }
+      return response.ok ? await response.text() : ''
     } catch {
-      modules.push('')
+      return ''
     }
   }
-  return modules
+
+  const preferredAsset = orderedAssets.shift()
+  if (!preferredAsset) return []
+
+  const preferredModule = await fetchModule(preferredAsset)
+  if (
+    /go\.referral\.reward\.apply/i.test(preferredModule) ||
+    /createSessionUrl_action/i.test(preferredModule)
+  ) {
+    return [preferredModule]
+  }
+
+  const remainingModules = await Promise.all(
+    orderedAssets.map(fetchModule)
+  )
+  return [preferredModule, ...remainingModules]
 }
 
 function refreshRouteModuleCache(
@@ -538,8 +548,10 @@ async function resolveWorkspaceId(cookie: string, fetchImpl: typeof fetch): Prom
 async function loadWorkspace(
   cookie: string,
   workspaceId: string,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  onStage?: (stage: OpenCodeAccountLoadStage) => void
 ): Promise<OpenCodeAccountInfo> {
+  onStage?.('workspace-page')
   const goRes = await fetchWithDeadline(fetchImpl, `${BASE}/workspace/${workspaceId}/go`, {
     method: 'GET',
     redirect: 'follow',
@@ -573,6 +585,7 @@ async function loadWorkspace(
 
   info.workspaceId = finalWorkspaceId
   if (info.availableReferralRewardIds.length || info.liteSubscriptionId) {
+    onStage?.('route-modules')
     const [referralServerId, billingServerId] = await Promise.all([
       info.availableReferralRewardIds.length
         ? discoverReferralApplyServerId(html, fetchImpl)
@@ -590,17 +603,18 @@ async function loadWorkspace(
 export async function fetchOpenCodeAccount(
   authCookie: string,
   cachedWorkspaceId?: string | null,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  onStage?: (stage: OpenCodeAccountLoadStage) => void
 ): Promise<OpenCodeAccountInfo> {
   const cookie = buildAuthCookie(authCookie)
   const cachedId = cachedWorkspaceId?.trim()
 
   if (cachedId) {
-    return loadWorkspace(cookie, cachedId, fetchImpl)
+    return loadWorkspace(cookie, cachedId, fetchImpl, onStage)
   }
 
   const workspaceId = await resolveWorkspaceId(cookie, fetchImpl)
-  return loadWorkspace(cookie, workspaceId, fetchImpl)
+  return loadWorkspace(cookie, workspaceId, fetchImpl, onStage)
 }
 
 export async function fetchOpenCodeAccounts(

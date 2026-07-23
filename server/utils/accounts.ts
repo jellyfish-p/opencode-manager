@@ -235,8 +235,20 @@ async function refreshAccountOnce(id: number, options: RefreshAccountOptions): P
   const fetchImpl = createAccountFetch(account)
 
   try {
-    options.progress?.update('workspace', '正在加载 workspace 与订阅页面')
-    let info = await fetchOpenCodeAccount(account.auth_cookie, account.workspace_id, fetchImpl)
+    options.progress?.update('workspace', '正在加载 workspace 页面')
+    let info = await fetchOpenCodeAccount(
+      account.auth_cookie,
+      account.workspace_id,
+      fetchImpl,
+      stage => {
+        options.progress?.update(
+          'workspace',
+          stage === 'route-modules'
+            ? '正在更新共享 JS 路由缓存'
+            : '正在加载 workspace 页面'
+        )
+      }
+    )
     cacheReferralRewards(id, info)
     options.progress?.update('referral', '正在检查推广额度')
     let referralError: string | null = null

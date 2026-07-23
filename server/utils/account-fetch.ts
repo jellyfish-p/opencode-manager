@@ -1,13 +1,11 @@
-import { SocksClient, type SocksProxy } from 'socks'
 import {
-  Agent,
   ProxyAgent,
-  buildConnector,
   fetch as undiciFetch,
   type Dispatcher
 } from 'undici-client'
 import type { Account } from './db'
 import { getIpPoolEntry } from './ip-pool'
+import { createSocksProxyFetch } from './socks-fetch'
 
 interface ProxyTransport {
   proxyUrl: string
@@ -19,14 +17,6 @@ const proxyTransports = new Map<number, ProxyTransport>()
 
 function isSocksProxy(proxyUrl: string) {
   return ['socks5:', 'socks5h:'].includes(new URL(proxyUrl).protocol)
-}
-
-function decodeCredential(value: string) {
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
-  }
 }
 
 function proxyFetch(dispatcher: Dispatcher): typeof fetch {
@@ -45,45 +35,11 @@ function proxyFetch(dispatcher: Dispatcher): typeof fetch {
   }) as typeof fetch
 }
 
-function createSocksConnector(proxyUrl: string): ReturnType<typeof buildConnector> {
-  const url = new URL(proxyUrl)
-  const proxy: SocksProxy = {
-    host: url.hostname.replace(/^\[(.*)\]$/, '$1'),
-    port: Number(url.port),
-    type: 5,
-    userId: url.username ? decodeCredential(url.username) : undefined,
-    password: url.password ? decodeCredential(url.password) : undefined
-  }
-  const upgradeTls = buildConnector({})
-
-  return async (options, callback) => {
-    try {
-      const { socket } = await SocksClient.createConnection({
-        command: 'connect',
-        proxy,
-        timeout: 10_000,
-        destination: {
-          host: options.hostname,
-          port: options.port ? Number(options.port) : options.protocol === 'http:' ? 80 : 443
-        }
-      })
-      if (options.protocol !== 'https:') {
-        callback(null, socket.setNoDelay())
-        return
-      }
-      upgradeTls({ ...options, httpSocket: socket }, callback)
-    } catch (error) {
-      callback(error as Error, null)
-    }
-  }
-}
-
 function createSocksTransport(proxyUrl: string): ProxyTransport {
-  const agent = new Agent({ connect: createSocksConnector(proxyUrl) })
   return {
     proxyUrl,
-    fetch: proxyFetch(agent),
-    close: () => agent.close()
+    fetch: createSocksProxyFetch(proxyUrl),
+    close: () => {}
   }
 }
 
