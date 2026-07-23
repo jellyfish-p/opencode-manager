@@ -71,6 +71,16 @@ export interface RiskControlCheckResult {
   message: string | null
 }
 
+export type BulkAccountAction = 'refresh' | 'risk-control-check' | 'enable' | 'disable'
+
+export interface BulkAccountActionResult {
+  action: BulkAccountAction
+  processed: number
+  skipped: number
+  blocked: number
+  accounts: Account[]
+}
+
 export function useAccounts() {
   const accounts = useState<Account[]>('accounts', () => [])
   const stats = useState<Stats | null>('stats', () => null)
@@ -125,6 +135,15 @@ export function useAccounts() {
   async function removeAccount(id: number) {
     await requestFetch(`/api/accounts/${id}`, { method: 'DELETE' })
     await Promise.all([fetchAccounts(), fetchStats()])
+  }
+
+  async function removeAccounts(ids: number[]) {
+    const result = await requestFetch<{ ok: boolean; deleted: number }>('/api/accounts/bulk', {
+      method: 'DELETE',
+      body: { ids }
+    })
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return result
   }
 
   async function removeNonMembers() {
@@ -199,6 +218,15 @@ export function useAccounts() {
     return results
   }
 
+  async function runBulkAccountAction(ids: number[], action: BulkAccountAction) {
+    const result = await requestFetch<BulkAccountActionResult>('/api/accounts/bulk', {
+      method: 'POST',
+      body: { ids, action }
+    })
+    await Promise.all([fetchAccounts(), fetchStats()])
+    return result
+  }
+
   return {
     accounts,
     stats,
@@ -209,6 +237,7 @@ export function useAccounts() {
     updateAccount,
     fetchAccountAuthCookie,
     removeAccount,
+    removeAccounts,
     removeNonMembers,
     refreshAccount,
     fetchReferralRewards,
@@ -216,6 +245,7 @@ export function useAccounts() {
     cancelRenewal,
     refreshAll,
     checkRiskControl,
-    checkAllRiskControls
+    checkAllRiskControls,
+    runBulkAccountAction
   }
 }

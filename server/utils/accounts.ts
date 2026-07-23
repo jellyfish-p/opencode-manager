@@ -428,6 +428,10 @@ export function checkAccountRiskControl(id: number): Promise<RiskControlCheckRes
   })
 }
 
+export function checkAccountRiskControlsByIds(ids: number[]) {
+  return mapConcurrent(ids, REFRESH_CONCURRENCY, checkAccountRiskControl)
+}
+
 export async function checkAllAccountRiskControls() {
   const accounts = listAccounts().filter(account =>
     Boolean(account.upstream_api_key) &&

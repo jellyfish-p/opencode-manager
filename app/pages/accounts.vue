@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Account } from '~/composables/useAccounts'
+import type { Account, BulkAccountAction } from '~/composables/useAccounts'
 
 const {
   accounts,
@@ -10,6 +10,7 @@ const {
   updateAccount,
   fetchAccountAuthCookie,
   removeAccount,
+  removeAccounts,
   removeNonMembers,
   refreshAccount,
   fetchReferralRewards,
@@ -17,7 +18,8 @@ const {
   cancelRenewal,
   refreshAll,
   checkRiskControl,
-  checkAllRiskControls
+  checkAllRiskControls,
+  runBulkAccountAction
 } = useAccounts()
 
 const toast = useToast()
@@ -44,19 +46,49 @@ const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
 const checkingAllRiskControls = ref(false)
 const membershipFilter = ref<'all' | 'member' | 'non-member'>('all')
+const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>('all')
+const selectedAccountIds = ref<number[]>([])
+const bulkAction = ref<BulkAccountAction | 'delete' | null>(null)
 
 const filteredAccounts = computed(() => {
-  if (membershipFilter.value === 'member') {
-    return accounts.value.filter(account => account.subscription_status === 'active')
-  }
-  if (membershipFilter.value === 'non-member') {
-    return accounts.value.filter(account => account.subscription_status !== 'active')
-  }
-  return accounts.value
+  return accounts.value.filter((account) => {
+    const matchesMembership =
+      membershipFilter.value === 'all' ||
+      (membershipFilter.value === 'member' && account.subscription_status === 'active') ||
+      (membershipFilter.value === 'non-member' && account.subscription_status !== 'active')
+    const isRiskControlled = account.disabled_reason === 'risk_control'
+    const matchesRiskControl =
+      riskControlFilter.value === 'all' ||
+      (riskControlFilter.value === 'risk-controlled' && isRiskControlled) ||
+      (riskControlFilter.value === 'not-risk-controlled' && !isRiskControlled)
+    return matchesMembership && matchesRiskControl
+  })
 })
 
 const nonMemberCount = computed(() =>
   accounts.value.filter(account => account.subscription_status !== 'active').length
+)
+const riskControlledCount = computed(() =>
+  accounts.value.filter(account => account.disabled_reason === 'risk_control').length
+)
+const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
+const allFilteredSelected = computed(() =>
+  filteredAccounts.value.length > 0 &&
+  filteredAccounts.value.every(account => selectedAccountIdSet.value.has(account.id))
+)
+const someFilteredSelected = computed(() =>
+  filteredAccounts.value.some(account => selectedAccountIdSet.value.has(account.id))
+)
+const selectAllValue = computed<boolean | 'indeterminate'>(() =>
+  allFilteredSelected.value ? true : someFilteredSelected.value ? 'indeterminate' : false
+)
+
+watch(
+  () => accounts.value.map(account => account.id),
+  (ids) => {
+    const existingIds = new Set(ids)
+    selectedAccountIds.value = selectedAccountIds.value.filter(id => existingIds.has(id))
+  }
 )
 
 await Promise.all([fetchAccounts(), fetchStats()])
@@ -204,6 +236,33 @@ async function onCancelRenewal() {
 
 function setMembershipFilter(value: 'all' | 'member' | 'non-member') {
   membershipFilter.value = value
+  selectedAccountIds.value = []
+}
+
+function setRiskControlFilter(value: 'all' | 'risk-controlled' | 'not-risk-controlled') {
+  riskControlFilter.value = value
+  selectedAccountIds.value = []
+}
+
+function setAccountSelected(id: number, value: boolean | 'indeterminate') {
+  if (value === true) {
+    if (!selectedAccountIdSet.value.has(id)) {
+      selectedAccountIds.value = [...selectedAccountIds.value, id]
+    }
+  } else {
+    selectedAccountIds.value = selectedAccountIds.value.filter(selectedId => selectedId !== id)
+  }
+}
+
+function setAllFilteredSelected(value: boolean | 'indeterminate') {
+  const filteredIds = new Set(filteredAccounts.value.map(account => account.id))
+  if (value === true) {
+    selectedAccountIds.value = [
+      ...new Set([...selectedAccountIds.value, ...filteredIds])
+    ]
+  } else {
+    selectedAccountIds.value = selectedAccountIds.value.filter(id => !filteredIds.has(id))
+  }
 }
 
 async function onAdd() {
@@ -354,6 +413,52 @@ async function onDeleteNonMembers() {
   }
 }
 
+async function onBulkAction(action: BulkAccountAction | 'delete') {
+  const ids = [...selectedAccountIds.value]
+  if (!ids.length) return
+  if (action === 'delete' && !confirm(`确认删除选中的 ${ids.length} 个账号？`)) return
+
+  bulkAction.value = action
+  try {
+    if (action === 'delete') {
+      const result = await removeAccounts(ids)
+      toast.add({ title: `已删除 ${result.deleted} 个账号`, color: 'success' })
+    } else {
+      const result = await runBulkAccountAction(ids, action)
+      const labels: Record<BulkAccountAction, string> = {
+        refresh: '刷新',
+        'risk-control-check': '风控检测',
+        enable: '启用',
+        disable: '禁用'
+      }
+      const failed = result.accounts.filter(account => account.status === 'error').length
+      const description = [
+        result.skipped
+          ? action === 'risk-control-check'
+            ? `跳过 ${result.skipped} 个缺少上游 Key 的账号`
+            : action === 'enable'
+              ? `跳过 ${result.skipped} 个未处于禁用状态的账号`
+              : action === 'disable'
+                ? `跳过 ${result.skipped} 个已禁用账号`
+                : ''
+          : '',
+        action === 'risk-control-check' && result.blocked ? `发现 ${result.blocked} 个风控账号` : '',
+        failed ? `${failed} 个账号同步失败` : ''
+      ].filter(Boolean).join('；')
+      toast.add({
+        title: `已对 ${result.processed} 个账号完成${labels[action]}`,
+        description: description || undefined,
+        color: result.blocked || result.skipped || failed ? 'warning' : 'success'
+      })
+    }
+    selectedAccountIds.value = []
+  } catch (e: any) {
+    toast.add({ title: e?.data?.statusMessage || e?.message || '批量操作失败', color: 'error' })
+  } finally {
+    bulkAction.value = null
+  }
+}
+
 async function copyReferralLink(code: string) {
   const url = `https://opencode.ai/go?ref=${encodeURIComponent(code)}`
   try {
@@ -411,12 +516,97 @@ async function copyReferralLink(code: string) {
     </div>
 
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex gap-2">
-        <UButton :variant="membershipFilter === 'all' ? 'soft' : 'ghost'" color="neutral" @click="setMembershipFilter('all')">全部 {{ accounts.length }}</UButton>
-        <UButton :variant="membershipFilter === 'member' ? 'soft' : 'ghost'" color="neutral" @click="setMembershipFilter('member')">会员 {{ accounts.length - nonMemberCount }}</UButton>
-        <UButton :variant="membershipFilter === 'non-member' ? 'soft' : 'ghost'" color="neutral" @click="setMembershipFilter('non-member')">非会员 {{ nonMemberCount }}</UButton>
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <div class="flex items-center gap-1">
+          <span class="mr-1 text-xs text-muted">会员</span>
+          <UButton :variant="membershipFilter === 'all' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('all')">全部 {{ accounts.length }}</UButton>
+          <UButton :variant="membershipFilter === 'member' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('member')">会员 {{ accounts.length - nonMemberCount }}</UButton>
+          <UButton :variant="membershipFilter === 'non-member' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setMembershipFilter('non-member')">非会员 {{ nonMemberCount }}</UButton>
+        </div>
+        <div class="flex items-center gap-1">
+          <span class="mr-1 text-xs text-muted">风控</span>
+          <UButton :variant="riskControlFilter === 'all' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setRiskControlFilter('all')">全部 {{ accounts.length }}</UButton>
+          <UButton :variant="riskControlFilter === 'risk-controlled' ? 'soft' : 'ghost'" color="error" size="sm" @click="setRiskControlFilter('risk-controlled')">风控中 {{ riskControlledCount }}</UButton>
+          <UButton :variant="riskControlFilter === 'not-risk-controlled' ? 'soft' : 'ghost'" color="neutral" size="sm" @click="setRiskControlFilter('not-risk-controlled')">未风控 {{ accounts.length - riskControlledCount }}</UButton>
+        </div>
       </div>
       <UButton v-if="nonMemberCount" icon="i-lucide-trash-2" color="error" variant="outline" @click="onDeleteNonMembers">删除全部非会员</UButton>
+    </div>
+
+    <div
+      v-if="selectedAccountIds.length"
+      class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
+    >
+      <div class="flex items-center gap-2 text-sm">
+        <UIcon name="i-lucide-list-checks" class="size-4 text-primary" />
+        <span class="font-medium text-highlighted">已选择 {{ selectedAccountIds.length }} 个账号</span>
+        <UButton
+          size="xs"
+          color="neutral"
+          variant="link"
+          :disabled="Boolean(bulkAction)"
+          @click="selectedAccountIds = []"
+        >
+          取消选择
+        </UButton>
+      </div>
+      <div class="flex flex-wrap gap-1">
+        <UButton
+          icon="i-lucide-shield-check"
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          :loading="bulkAction === 'risk-control-check'"
+          :disabled="Boolean(bulkAction)"
+          @click="onBulkAction('risk-control-check')"
+        >
+          风控检测
+        </UButton>
+        <UButton
+          icon="i-lucide-refresh-cw"
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          :loading="bulkAction === 'refresh'"
+          :disabled="Boolean(bulkAction)"
+          @click="onBulkAction('refresh')"
+        >
+          刷新
+        </UButton>
+        <UButton
+          icon="i-lucide-play"
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          :loading="bulkAction === 'enable'"
+          :disabled="Boolean(bulkAction)"
+          @click="onBulkAction('enable')"
+        >
+          启用
+        </UButton>
+        <UButton
+          icon="i-lucide-pause"
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          :loading="bulkAction === 'disable'"
+          :disabled="Boolean(bulkAction)"
+          @click="onBulkAction('disable')"
+        >
+          禁用
+        </UButton>
+        <UButton
+          icon="i-lucide-trash-2"
+          size="sm"
+          color="error"
+          variant="ghost"
+          :loading="bulkAction === 'delete'"
+          :disabled="Boolean(bulkAction)"
+          @click="onBulkAction('delete')"
+        >
+          删除
+        </UButton>
+      </div>
     </div>
 
     <UCard :ui="{ body: 'p-0 sm:p-0' }">
@@ -430,6 +620,15 @@ async function copyReferralLink(code: string) {
         <table class="w-full text-sm">
           <thead class="border-b border-default bg-elevated/50">
             <tr class="text-left text-muted">
+              <th class="w-12 px-4 py-3 font-medium">
+                <UCheckbox
+                  :model-value="selectAllValue"
+                  :disabled="!filteredAccounts.length"
+                  aria-label="全选当前筛选结果"
+                  title="全选当前筛选结果"
+                  @update:model-value="setAllFilteredSelected"
+                />
+              </th>
               <th class="px-4 py-3 font-medium">账号</th>
               <th class="px-4 py-3 font-medium">状态</th>
               <th class="px-4 py-3 font-medium">出口</th>
@@ -446,7 +645,15 @@ async function copyReferralLink(code: string) {
               v-for="account in filteredAccounts"
               :key="account.id"
               class="border-b border-default last:border-0 hover:bg-elevated/40"
+              :class="{ 'bg-primary/5': selectedAccountIdSet.has(account.id) }"
             >
+              <td class="w-12 px-4 py-3">
+                <UCheckbox
+                  :model-value="selectedAccountIdSet.has(account.id)"
+                  :aria-label="`选择账号 ${account.name || account.email || account.id}`"
+                  @update:model-value="value => setAccountSelected(account.id, value)"
+                />
+              </td>
               <td class="px-4 py-3">
                 <div class="font-medium text-highlighted">
                   {{ account.name || account.email || `#${account.id}` }}
@@ -580,6 +787,11 @@ async function copyReferralLink(code: string) {
                     @click="onDelete(account.id)"
                   />
                 </div>
+              </td>
+            </tr>
+            <tr v-if="!filteredAccounts.length">
+              <td colspan="10" class="px-4 py-12 text-center text-muted">
+                没有符合当前筛选条件的账号
               </td>
             </tr>
           </tbody>
