@@ -15,7 +15,7 @@ describe('OpenCode referral rewards', () => {
     clearOpenCodeRouteModuleCache()
   })
 
-  test('parses only available rewards from SSR hydration', () => {
+  test('separates available and used rewards from SSR hydration', () => {
     const html = `
       referralCode:"HMVSC7SZVQ",hasReferral:!0,rewards:$R[1]=[
         $R[2]={id:"ref_APPLIED1",source:"inviter",status:"applied",amount:500},
@@ -26,6 +26,7 @@ describe('OpenCode referral rewards', () => {
     const info = parseOpenCodeHydration(html)
     expect(info.referralCode).toBe('HMVSC7SZVQ')
     expect(info.availableReferralRewardIds).toEqual(['ref_AVAILABLE2'])
+    expect(info.usedReferralRewardIds).toEqual(['ref_APPLIED1'])
     expect(info.liteSubscriptionId).toBe('sub_LITE')
   })
 

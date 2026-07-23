@@ -15,6 +15,9 @@ const name = ref('')
 const customKey = ref('')
 const createdKey = ref('')
 const submitting = ref(false)
+const deleting = ref(false)
+const deleteTarget = ref<ApiKeyItem | null>(null)
+const deleteDialogOpen = ref(false)
 const baseUrl = `${useRequestURL().origin}/v1`
 
 async function load() {
@@ -51,11 +54,26 @@ async function createKey() {
   }
 }
 
-async function removeKey(key: ApiKeyItem) {
-  if (key.source === 'config' || !confirm(`确认删除 ${key.name}？`)) return
-  await requestFetch(`/api/api-keys/${key.id}`, { method: 'DELETE' })
-  await load()
-  toast.add({ title: 'API 密钥已删除', color: 'success' })
+function removeKey(key: ApiKeyItem) {
+  if (key.source === 'config') return
+  deleteTarget.value = key
+  deleteDialogOpen.value = true
+}
+
+async function confirmRemoveKey() {
+  if (!deleteTarget.value) return
+  deleting.value = true
+  try {
+    await requestFetch(`/api/api-keys/${deleteTarget.value.id}`, { method: 'DELETE' })
+    await load()
+    toast.add({ title: 'API 密钥已删除', color: 'success' })
+    deleteDialogOpen.value = false
+    deleteTarget.value = null
+  } catch (error: any) {
+    toast.add({ title: error?.data?.statusMessage || '删除失败', color: 'error' })
+  } finally {
+    deleting.value = false
+  }
 }
 
 async function copy(value: string) {
@@ -123,5 +141,13 @@ async function copy(value: string) {
       </template>
       <template #footer><div class="flex justify-end gap-2"><UButton color="neutral" variant="ghost" @click="closeModal">取消</UButton><UButton :loading="submitting" @click="createKey">创建</UButton></div></template>
     </UModal>
+
+    <AppConfirmDialog
+      v-model:open="deleteDialogOpen"
+      title="删除 API 密钥？"
+      :description="`将永久删除“${deleteTarget?.name || ''}”。使用该密钥的客户端会立即失去访问权限。`"
+      :loading="deleting"
+      @confirm="confirmRemoveKey"
+    />
   </div>
 </template>

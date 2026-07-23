@@ -12,6 +12,7 @@ export default defineEventHandler((event) => {
   return {
     cached: Boolean(cached),
     rewardIds: cached?.rewardIds ?? [],
+    usedRewardIds: cached?.usedRewardIds ?? [],
     refreshedAt: cached ? new Date(cached.refreshedAt).toISOString() : null
   }
 })

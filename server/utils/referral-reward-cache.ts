@@ -1,5 +1,6 @@
 export interface ReferralRewardCacheInput {
   rewardIds: Iterable<string>
+  usedRewardIds?: Iterable<string>
   workspaceId: string | null
   applyServerId: string | null
   refreshedAt?: number
@@ -7,6 +8,7 @@ export interface ReferralRewardCacheInput {
 
 export interface ReferralRewardCacheSnapshot {
   rewardIds: string[]
+  usedRewardIds: string[]
   workspaceId: string | null
   applyServerId: string | null
   refreshedAt: number
@@ -21,6 +23,7 @@ export interface SelectedReferralReward {
 
 interface ReferralRewardCacheEntry {
   rewardIds: Set<string>
+  usedRewardIds: Set<string>
   workspaceId: string | null
   applyServerId: string | null
   refreshedAt: number
@@ -34,6 +37,7 @@ export function cacheAvailableReferralRewards(
 ) {
   referralRewardsByAccount.set(accountId, {
     rewardIds: new Set(input.rewardIds),
+    usedRewardIds: new Set(input.usedRewardIds ?? []),
     workspaceId: input.workspaceId,
     applyServerId: input.applyServerId,
     refreshedAt: input.refreshedAt ?? Date.now()
@@ -47,6 +51,7 @@ export function getCachedReferralRewards(
   if (!cached) return undefined
   return {
     rewardIds: [...cached.rewardIds],
+    usedRewardIds: [...cached.usedRewardIds],
     workspaceId: cached.workspaceId,
     applyServerId: cached.applyServerId,
     refreshedAt: cached.refreshedAt
@@ -68,7 +73,10 @@ export function selectCachedReferralReward(
 }
 
 export function consumeCachedReferralReward(accountId: number, rewardId: string) {
-  return referralRewardsByAccount.get(accountId)?.rewardIds.delete(rewardId) ?? false
+  const cached = referralRewardsByAccount.get(accountId)
+  if (!cached?.rewardIds.delete(rewardId)) return false
+  cached.usedRewardIds.add(rewardId)
+  return true
 }
 
 export function removeCachedReferralRewards(accountId: number) {

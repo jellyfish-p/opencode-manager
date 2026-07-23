@@ -5,6 +5,11 @@ import type {
   AccountBatchProgress
 } from '~/composables/useAccounts'
 
+type DeleteIntent =
+  | { kind: 'account'; id: number; label: string }
+  | { kind: 'non-members'; count: number }
+  | { kind: 'selected'; ids: number[] }
+
 const {
   accounts,
   loading,
@@ -38,10 +43,12 @@ const actionAccount = ref<Account | null>(null)
 const submitting = ref(false)
 const accountAction = ref<'referral' | 'cancel-renewal' | null>(null)
 const referralRewardIds = ref<string[]>([])
+const usedReferralRewardIds = ref<string[]>([])
 const referralRewardsCached = ref<boolean | null>(null)
 const referralRewardsLoading = ref(false)
 const referralRewardsError = ref(false)
 const selectedReferralRewardId = ref<string | null>(null)
+const usedReferralRewardsOpen = ref(false)
 const confirmCancellation = ref(false)
 const actionId = ref<number | null>(null)
 const refreshingAll = ref(false)
@@ -51,6 +58,9 @@ const riskControlFilter = ref<'all' | 'risk-controlled' | 'not-risk-controlled'>
 const selectedAccountIds = ref<number[]>([])
 const bulkAction = ref<AccountBatchAction | null>(null)
 const batchProgress = ref<(AccountBatchProgress & { label: string }) | null>(null)
+const deleteIntent = ref<DeleteIntent | null>(null)
+const deleteDialogOpen = ref(false)
+const deleteConfirmLoading = ref(false)
 
 const filteredAccounts = computed(() => {
   return accounts.value.filter((account) => {
@@ -84,6 +94,22 @@ const someFilteredSelected = computed(() =>
 const selectAllValue = computed<boolean | 'indeterminate'>(() =>
   allFilteredSelected.value ? true : someFilteredSelected.value ? 'indeterminate' : false
 )
+const deleteDialogTitle = computed(() => {
+  if (deleteIntent.value?.kind === 'non-members') return '删除全部非会员账号？'
+  if (deleteIntent.value?.kind === 'selected') return '删除选中的账号？'
+  return '删除账号？'
+})
+const deleteDialogDescription = computed(() => {
+  const intent = deleteIntent.value
+  if (!intent) return ''
+  if (intent.kind === 'account') {
+    return `将永久删除账号“${intent.label}”及其本地同步数据。此操作无法撤销。`
+  }
+  if (intent.kind === 'non-members') {
+    return `将永久删除 ${intent.count} 个非会员账号及其本地同步数据。此操作无法撤销。`
+  }
+  return `将永久删除选中的 ${intent.ids.length} 个账号及其本地同步数据。此操作无法撤销。`
+})
 
 watch(
   () => accounts.value.map(account => account.id),
@@ -150,15 +176,18 @@ async function openActionsModal(account: Account) {
   actionAccount.value = account
   confirmCancellation.value = false
   referralRewardIds.value = []
+  usedReferralRewardIds.value = []
   referralRewardsCached.value = null
   referralRewardsError.value = false
   selectedReferralRewardId.value = null
+  usedReferralRewardsOpen.value = false
   openActions.value = true
   referralRewardsLoading.value = true
   try {
     const result = await fetchReferralRewards(account.id)
     if (actionAccount.value?.id !== account.id) return
     referralRewardIds.value = result.rewardIds
+    usedReferralRewardIds.value = result.usedRewardIds
     referralRewardsCached.value = result.cached
   } catch (e: any) {
     if (actionAccount.value?.id === account.id) {
@@ -201,6 +230,7 @@ async function onUseReferralReward(rewardId: string) {
     const result = await useReferralReward(actionAccount.value.id, rewardId)
     actionAccount.value = result.account
     referralRewardIds.value = result.rewardIds
+    usedReferralRewardIds.value = result.usedRewardIds
     referralRewardsCached.value = true
     toast.add({
       title: result.refreshed ? '推广额度已使用并刷新' : '推广额度已使用，但账户刷新失败',
@@ -343,17 +373,13 @@ async function onToggle(account: Account) {
   }
 }
 
-async function onDelete(id: number) {
-  if (!confirm('确认删除该账号？')) return
-  actionId.value = id
-  try {
-    await removeAccount(id)
-    toast.add({ title: '已删除', color: 'success' })
-  } catch (e: any) {
-    toast.add({ title: e?.data?.statusMessage || '删除失败', color: 'error' })
-  } finally {
-    actionId.value = null
+function onDelete(account: Account) {
+  deleteIntent.value = {
+    kind: 'account',
+    id: account.id,
+    label: account.name || account.email || `#${account.id}`
   }
+  deleteDialogOpen.value = true
 }
 
 async function onRefreshAll() {
@@ -437,21 +463,24 @@ async function onCheckAllRiskControls() {
   }
 }
 
-async function onDeleteNonMembers() {
-  if (!nonMemberCount.value || !confirm(`确认删除 ${nonMemberCount.value} 个非会员账号？`)) return
-  try {
-    const result = await removeNonMembers()
-    toast.add({ title: `已删除 ${result.deleted} 个非会员账号`, color: 'success' })
-  } catch (e: any) {
-    toast.add({ title: e?.data?.statusMessage || '批量删除失败', color: 'error' })
-  }
+function onDeleteNonMembers() {
+  if (!nonMemberCount.value) return
+  deleteIntent.value = { kind: 'non-members', count: nonMemberCount.value }
+  deleteDialogOpen.value = true
 }
 
 async function onBulkAction(action: AccountBatchAction) {
   const ids = [...selectedAccountIds.value]
   if (!ids.length) return
-  if (action === 'delete' && !confirm(`确认删除选中的 ${ids.length} 个账号？`)) return
+  if (action === 'delete') {
+    deleteIntent.value = { kind: 'selected', ids }
+    deleteDialogOpen.value = true
+    return
+  }
+  await executeBulkAction(action, ids)
+}
 
+async function executeBulkAction(action: AccountBatchAction, ids: number[]) {
   bulkAction.value = action
   try {
     const labels: Record<AccountBatchAction, string> = {
@@ -487,11 +516,43 @@ async function onBulkAction(action: AccountBatchAction) {
       color: result.blocked || result.skipped || result.failed ? 'warning' : 'success'
     })
     selectedAccountIds.value = []
+    return true
   } catch (e: any) {
     toast.add({ title: e?.data?.statusMessage || e?.message || '批量操作失败', color: 'error' })
+    return false
   } finally {
     bulkAction.value = null
     batchProgress.value = null
+  }
+}
+
+async function confirmDelete() {
+  const intent = deleteIntent.value
+  if (!intent) return
+
+  deleteConfirmLoading.value = true
+  try {
+    if (intent.kind === 'account') {
+      actionId.value = intent.id
+      await removeAccount(intent.id)
+      toast.add({ title: '账号已删除', color: 'success' })
+    } else if (intent.kind === 'non-members') {
+      const result = await removeNonMembers()
+      toast.add({ title: `已删除 ${result.deleted} 个非会员账号`, color: 'success' })
+    } else {
+      const succeeded = await executeBulkAction('delete', intent.ids)
+      if (!succeeded) return
+    }
+    deleteDialogOpen.value = false
+    deleteIntent.value = null
+  } catch (e: any) {
+    toast.add({
+      title: e?.data?.statusMessage || e?.message || '删除失败',
+      color: 'error'
+    })
+  } finally {
+    actionId.value = null
+    deleteConfirmLoading.value = false
   }
 }
 
@@ -846,7 +907,7 @@ async function copyReferralLink(code: string) {
                     color="error"
                     variant="ghost"
                     :loading="actionId === account.id"
-                    @click="onDelete(account.id)"
+                    @click="onDelete(account)"
                   />
                 </div>
               </td>
@@ -980,6 +1041,44 @@ async function copyReferralLink(code: string) {
               </div>
             </div>
 
+            <div v-if="referralRewardsCached" class="mt-4 border-t border-default pt-3">
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-3 rounded-md px-1 py-2 text-left hover:bg-elevated/60"
+                :aria-expanded="usedReferralRewardsOpen"
+                @click="usedReferralRewardsOpen = !usedReferralRewardsOpen"
+              >
+                <span class="flex items-center gap-2">
+                  <span class="text-sm font-medium text-highlighted">已使用推广额度</span>
+                  <UBadge color="neutral" variant="subtle" size="sm">
+                    {{ usedReferralRewardIds.length }} 笔
+                  </UBadge>
+                </span>
+                <UIcon
+                  name="i-lucide-chevron-down"
+                  class="size-4 text-muted transition-transform"
+                  :class="{ 'rotate-180': usedReferralRewardsOpen }"
+                />
+              </button>
+              <div v-if="usedReferralRewardsOpen" class="mt-2 space-y-2">
+                <p v-if="!usedReferralRewardIds.length" class="px-1 py-2 text-sm text-muted">
+                  暂无已使用额度
+                </p>
+                <template v-else>
+                  <div
+                    v-for="rewardId in usedReferralRewardIds"
+                    :key="rewardId"
+                    class="flex items-center gap-2 rounded-md bg-elevated px-3 py-2"
+                  >
+                    <UIcon name="i-lucide-circle-check" class="size-4 shrink-0 text-success" />
+                    <span class="min-w-0 truncate font-mono text-sm text-muted" :title="rewardId">
+                      {{ rewardId }}
+                    </span>
+                  </div>
+                </template>
+              </div>
+            </div>
+
             <p v-if="actionAccount.last_referral_reward_applied_at" class="mt-3 text-xs text-muted">
               上次使用：{{ formatDate(actionAccount.last_referral_reward_applied_at) }}
             </p>
@@ -1051,5 +1150,13 @@ async function copyReferralLink(code: string) {
         </div>
       </template>
     </UModal>
+
+    <AppConfirmDialog
+      v-model:open="deleteDialogOpen"
+      :title="deleteDialogTitle"
+      :description="deleteDialogDescription"
+      :loading="deleteConfirmLoading"
+      @confirm="confirmDelete"
+    />
   </div>
 </template>

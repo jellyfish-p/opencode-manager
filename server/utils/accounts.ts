@@ -141,6 +141,7 @@ interface RefreshAccountOptions {
 function cacheReferralRewards(accountId: number, info: OpenCodeAccountInfo) {
   cacheAvailableReferralRewards(accountId, {
     rewardIds: info.availableReferralRewardIds,
+    usedRewardIds: info.usedReferralRewardIds,
     workspaceId: info.workspaceId,
     applyServerId: info.referralApplyServerId
   })
@@ -520,6 +521,7 @@ async function useAccountReferralRewardOnce(id: number, referralId: string) {
     account: refreshedAccount,
     rewardId: selected.rewardId,
     rewardIds: getCachedReferralRewards(id)?.rewardIds ?? [],
+    usedRewardIds: getCachedReferralRewards(id)?.usedRewardIds ?? [],
     refreshed
   }
 }

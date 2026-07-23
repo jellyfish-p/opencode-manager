@@ -60,6 +60,7 @@ export interface Stats {
 export interface ReferralRewardList {
   cached: boolean
   rewardIds: string[]
+  usedRewardIds: string[]
   refreshedAt: string | null
 }
 
@@ -185,6 +186,7 @@ export function useAccounts() {
       account: Account
       rewardId: string
       rewardIds: string[]
+      usedRewardIds: string[]
       refreshed: boolean
     }>(
       `/api/accounts/${id}/referral-reward`,

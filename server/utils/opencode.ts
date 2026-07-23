@@ -19,6 +19,7 @@ export interface OpenCodeAccountInfo {
   monthlyResetSec: number | null
   referralCode: string | null
   availableReferralRewardIds: string[]
+  usedReferralRewardIds: string[]
   referralApplyServerId: string | null
   liteSubscriptionId: string | null
   billingPortalServerId: string | null
@@ -115,6 +116,7 @@ export function parseOpenCodeHydration(html: string): OpenCodeAccountInfo {
     monthlyResetSec: null,
     referralCode: null,
     availableReferralRewardIds: [],
+    usedReferralRewardIds: [],
     referralApplyServerId: null,
     liteSubscriptionId: null,
     billingPortalServerId: null,
@@ -167,6 +169,13 @@ export function parseOpenCodeHydration(html: string): OpenCodeAccountInfo {
       /id:\s*"(ref_[A-Z0-9]+)"\s*,\s*source:\s*"(?:inviter|invitee)"\s*,\s*status:\s*"available"/gi
     )
   ].map(match => match[1]!)
+  result.usedReferralRewardIds = [
+    ...new Set(
+      [...html.matchAll(
+        /id:\s*"(ref_[A-Z0-9]+)"\s*,\s*source:\s*"(?:inviter|invitee)"\s*,\s*status:\s*"(?:applied|used)"/gi
+      )].map(match => match[1]!)
+    )
+  ]
 
   const liteSubscriptionMatch = html.match(/liteSubscriptionID:\s*"([^"]+)"/i)
   if (liteSubscriptionMatch) result.liteSubscriptionId = liteSubscriptionMatch[1] || null

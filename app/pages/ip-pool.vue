@@ -32,6 +32,8 @@ const formName = ref('')
 const formUrls = ref('')
 const editing = ref<IpPoolEntry | null>(null)
 const blockSize = ref(5)
+const deleteTarget = ref<IpPoolEntry | null>(null)
+const deleteDialogOpen = ref(false)
 
 async function load() {
   loading.value = true
@@ -61,6 +63,14 @@ function openEditModal(entry: IpPoolEntry) {
   formName.value = entry.name || ''
   formUrls.value = ''
   openEdit.value = true
+}
+
+function closeAddModal() {
+  openAdd.value = false
+}
+
+function closeEditModal() {
+  openEdit.value = false
 }
 
 async function addProxies() {
@@ -147,8 +157,14 @@ async function testEntry(entry: IpPoolEntry) {
   }
 }
 
-async function removeEntry(entry: IpPoolEntry) {
-  if (!confirm(`确认删除 ${entry.name || `代理 #${entry.id}`}？绑定账号会自动迁移。`)) return
+function removeEntry(entry: IpPoolEntry) {
+  deleteTarget.value = entry
+  deleteDialogOpen.value = true
+}
+
+async function confirmRemoveEntry() {
+  if (!deleteTarget.value) return
+  const entry = deleteTarget.value
   actionId.value = entry.id
   try {
     const result = await requestFetch<{ reassigned: number }>(`/api/ip-pool/${entry.id}`, {
@@ -160,6 +176,8 @@ async function removeEntry(entry: IpPoolEntry) {
       description: result.reassigned ? `已迁移 ${result.reassigned} 个账号` : undefined,
       color: 'success'
     })
+    deleteDialogOpen.value = false
+    deleteTarget.value = null
   } catch (error: any) {
     toast.add({ title: error?.data?.statusMessage || '删除失败', color: 'error' })
   } finally {
@@ -355,7 +373,7 @@ async function assignUnbound() {
       </template>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <UButton color="neutral" variant="ghost" @click="openAdd = false">取消</UButton>
+          <UButton color="neutral" variant="ghost" @click="closeAddModal">取消</UButton>
           <UButton :loading="loading" @click="addProxies">添加并自动绑定</UButton>
         </div>
       </template>
@@ -373,10 +391,18 @@ async function assignUnbound() {
       </template>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <UButton color="neutral" variant="ghost" @click="openEdit = false">取消</UButton>
+          <UButton color="neutral" variant="ghost" @click="closeEditModal">取消</UButton>
           <UButton :loading="actionId === editing?.id" @click="saveEdit">保存</UButton>
         </div>
       </template>
     </UModal>
+
+    <AppConfirmDialog
+      v-model:open="deleteDialogOpen"
+      title="删除出口代理？"
+      :description="`将删除“${deleteTarget?.name || `代理 #${deleteTarget?.id || ''}`}”。绑定账号会自动迁移到其他可用出口。`"
+      :loading="actionId === deleteTarget?.id"
+      @confirm="confirmRemoveEntry"
+    />
   </div>
 </template>

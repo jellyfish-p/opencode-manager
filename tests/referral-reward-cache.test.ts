@@ -17,6 +17,7 @@ describe('referral reward memory cache', () => {
   test('replaces and deduplicates available rewards on refresh', () => {
     cacheAvailableReferralRewards(1, {
       rewardIds: ['ref_A', 'ref_A', 'ref_B'],
+      usedRewardIds: ['ref_USED', 'ref_USED'],
       workspaceId: 'wrk_TEST',
       applyServerId: 'server-action',
       refreshedAt: 123
@@ -24,6 +25,7 @@ describe('referral reward memory cache', () => {
 
     expect(getCachedReferralRewards(1)).toEqual({
       rewardIds: ['ref_A', 'ref_B'],
+      usedRewardIds: ['ref_USED'],
       workspaceId: 'wrk_TEST',
       applyServerId: 'server-action',
       refreshedAt: 123
@@ -53,6 +55,7 @@ describe('referral reward memory cache', () => {
 
     expect(consumeCachedReferralReward(1, 'ref_A')).toBe(true)
     expect(getCachedReferralRewards(1)?.rewardIds).toEqual(['ref_B'])
+    expect(getCachedReferralRewards(1)?.usedRewardIds).toEqual(['ref_A'])
 
     retainCachedReferralRewardAccounts([1])
     expect(getCachedReferralRewards(1)).toBeDefined()
